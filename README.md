@@ -1,22 +1,39 @@
 # Qwen3-ASR History
 
-Local speech-to-text server using Qwen3-ASR on Apple Silicon via MLX. Model stays loaded in memory for fast inference (~120-200ms hot).
+Local speech-to-text server using Qwen3-ASR on Apple Silicon via MLX.
 
-## Requirements
+![screenshot](screenshot.png)
 
-- macOS with Apple Silicon
-- Python 3.12+
-- ffmpeg
+## Quick Start
 
-## Install
-
+**Install** - clone and run setup, server starts automatically via launchd.
 ```bash
 git clone https://github.com/hanxiao/qwen3-asr-history ~/Documents/qwen3-asr-history
-cd ~/Documents/qwen3-asr-history
-./setup.sh
+cd ~/Documents/qwen3-asr-history && ./setup.sh
 ```
 
-Server starts automatically at `http://127.0.0.1:18321`.
+**CLI** - transcribe audio files directly.
+```bash
+bin/qwen3-asr recording.ogg        # Chinese (default)
+bin/qwen3-asr recording.ogg en     # English
+```
+
+**API** - POST audio path for transcription.
+```bash
+curl -X POST http://127.0.0.1:18321/transcribe \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/path/to/audio.ogg", "language": "zh"}'
+```
+
+**UI** - browse history at http://127.0.0.1:18321/history
+
+**Service** - manage the background server.
+```bash
+launchctl list | grep qwen3-asr       # status
+launchctl stop ai.openclaw.qwen3-asr  # stop
+launchctl start ai.openclaw.qwen3-asr # start
+tail -f logs/server.log               # logs
+```
 
 ## OpenClaw Setup
 
@@ -42,41 +59,16 @@ Add to `~/.openclaw/openclaw.json`:
 }
 ```
 
-The CLI wrapper calls the local server (fast) with fallback to cold start if server is down.
-
-## Usage
-
-CLI:
-```bash
-bin/qwen3-asr recording.ogg        # Chinese (default)
-bin/qwen3-asr recording.ogg en     # English
-```
-
-API:
-```bash
-curl -X POST http://127.0.0.1:18321/transcribe \
-  -H "Content-Type: application/json" \
-  -d '{"path": "/path/to/audio.ogg", "language": "zh"}'
-```
-
-History UI: http://127.0.0.1:18321/history
-
-## Service
-
-```bash
-launchctl list | grep qwen3-asr                              # status
-launchctl unload ~/Library/LaunchAgents/ai.openclaw.qwen3-asr.plist  # stop
-launchctl load ~/Library/LaunchAgents/ai.openclaw.qwen3-asr.plist    # start
-tail -f ~/Documents/qwen3-asr-history/logs/server.log        # logs
-```
-
 ## Models
 
-Available models (switch via environment or config):
+Switch via UI dropdown:
 - `mlx-community/Qwen3-ASR-0.6B-bf16` - fastest, default
 - `mlx-community/Qwen3-ASR-1.7B-8bit` - better quality
+- `mlx-community/whisper-large-v3-turbo-asr-fp16` - whisper turbo
+- `mlx-community/whisper-large-v3-asr-8bit` - whisper v3
 
-## Performance
+## Requirements
 
-- Cold start: ~3s (Python + model loading)
-- Hot (server running): ~120-200ms
+- macOS with Apple Silicon
+- Python 3.12+
+- ffmpeg

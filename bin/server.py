@@ -41,7 +41,19 @@ HISTORY_DIR = PROJECT_DIR / "history"
 
 app = FastAPI(title="Qwen3-ASR Server")
 
-def save_to_history(audio_path: str, text: str, duration_ms: float):
+def get_audio_duration(audio_path: str) -> float:
+    """Get audio duration in milliseconds using ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+            capture_output=True, text=True, timeout=10
+        )
+        return float(result.stdout.strip()) * 1000
+    except:
+        return 0.0
+
+def save_to_history(audio_path: str, text: str, latency_ms: float, audio_duration_ms: float, model_name: str):
     """Save transcription to history (stores reference to original audio path)."""
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d")
@@ -57,7 +69,9 @@ def save_to_history(audio_path: str, text: str, duration_ms: float):
         "audio_path": str(audio_src.resolve()),  # full path to original file
         "audio_file": audio_src.name,  # just filename for display
         "text": text,
-        "duration_ms": round(duration_ms, 2)
+        "latency_ms": round(latency_ms, 2),  # processing time
+        "audio_duration_ms": round(audio_duration_ms, 2),  # actual audio length
+        "model": model_name.split("/")[-1]  # short model name
     }
     jsonl_path = day_dir / "transcripts.jsonl"
     with open(jsonl_path, "a", encoding="utf-8") as f:
@@ -207,10 +221,11 @@ async def transcribe(req: TranscribeRequest):
             os.unlink(wav_path)
 
     latency_ms = (time.time() - start) * 1000
+    audio_duration_ms = get_audio_duration(req.path)
 
     # Save to history
     if text:
-        save_to_history(req.path, text, latency_ms)
+        save_to_history(req.path, text, latency_ms, audio_duration_ms, current_model_name)
 
     return TranscribeResponse(text=text, latency_ms=latency_ms)
 
@@ -317,6 +332,11 @@ HISTORY_HTML = """
             align-items: center;
             justify-content: space-between;
         }
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
         .header h2 {
             font-size: 13px;
             font-weight: 500;
@@ -363,7 +383,7 @@ HISTORY_HTML = """
             display: flex;
             gap: 4px;
             align-items: center;
-            margin-left: 16px;
+            margin-left: 8px;
         }
         .speed-label {
             font-size: 11px;
@@ -409,12 +429,27 @@ HISTORY_HTML = """
             color: #6b7280;
             font-size: 12px;
         }
-        .transcript-duration {
+        .transcript-latency {
             color: #e25f4a;
             font-size: 11px;
             padding: 2px 6px;
             background: #fef2f0;
             border-radius: 3px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .transcript-latency svg {
+            width: 12px;
+            height: 12px;
+        }
+        .transcript-model {
+            color: #6b7280;
+            font-size: 10px;
+            padding: 2px 6px;
+            background: #f3f4f6;
+            border-radius: 3px;
+            margin-left: auto;
         }
         .transcript-text {
             font-size: 15px;
@@ -645,22 +680,28 @@ HISTORY_HTML = """
         <div class="main">
             <div class="header">
                 <h2>Transcripts</h2>
-                <div class="sort-controls">
-                    <span class="sort-label">sort:</span>
-                    <button class="sort-btn active" id="sort-time" onclick="setSort('time')">
-                        time
-                        <svg id="sort-time-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5z"/></svg>
-                    </button>
-                    <button class="sort-btn" id="sort-length" onclick="setSort('length')">
-                        length
-                        <svg id="sort-length-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5z"/></svg>
-                    </button>
-                </div>
-                <div class="speed-controls">
-                    <span class="speed-label">speed:</span>
-                    <button class="speed-btn" data-speed="1" onclick="setSpeed(1)">1x</button>
-                    <button class="speed-btn active" data-speed="2" onclick="setSpeed(2)">2x</button>
-                    <button class="speed-btn" data-speed="4" onclick="setSpeed(4)">4x</button>
+                <div class="header-controls">
+                    <div class="sort-controls">
+                        <span class="sort-label">sort:</span>
+                        <button class="sort-btn active" id="sort-time" onclick="setSort('time')">
+                            time
+                            <svg id="sort-time-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5z"/></svg>
+                        </button>
+                        <button class="sort-btn" id="sort-length" onclick="setSort('length')">
+                            length
+                            <svg id="sort-length-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5z"/></svg>
+                        </button>
+                        <button class="sort-btn" id="sort-latency" onclick="setSort('latency')">
+                            latency
+                            <svg id="sort-latency-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5z"/></svg>
+                        </button>
+                    </div>
+                    <div class="speed-controls">
+                        <span class="speed-label">speed:</span>
+                        <button class="speed-btn" data-speed="1" onclick="setSpeed(1)">1x</button>
+                        <button class="speed-btn active" data-speed="2" onclick="setSpeed(2)">2x</button>
+                        <button class="speed-btn" data-speed="4" onclick="setSpeed(4)">4x</button>
+                    </div>
                 </div>
             </div>
             <div id="transcripts"><div class="empty">select a date to view transcripts</div></div>
@@ -759,18 +800,30 @@ HISTORY_HTML = """
 
             container.innerHTML = sortedRecords.map((r, i) => {
                 const time = new Date(r.timestamp).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit', second: '2-digit'});
-                const duration = (r.duration_ms / 1000).toFixed(1);
+                const latency = (r.latency_ms || r.duration_ms || 0) / 1000;  // fallback for old records
+                const audioLen = (r.audio_duration_ms || 0) / 1000;
+                const model = r.model || 'unknown';
                 return `
                     <div class="transcript" data-audio-url="/audio/${date}/${r.audio_file}">
                         <div class="transcript-header">
                             <span class="transcript-time">${time}</span>
-                            <span class="transcript-duration">${duration}s</span>
+                            <span class="transcript-latency">
+                                <svg viewBox="0 0 24 24" fill="currentColor">
+                                    <circle cx="12" cy="13" r="8" fill="none" stroke="currentColor" stroke-width="2"/>
+                                    <path d="M12 9v4l2.5 2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                    <circle cx="10" cy="12" r="0.8"/><circle cx="14" cy="12" r="0.8"/>
+                                    <path d="M10 15.5q2 1.5 4 0" fill="none" stroke="currentColor" stroke-width="0.8" stroke-linecap="round"/>
+                                    <rect x="10" y="3" width="4" height="2" rx="0.5"/>
+                                </svg>
+                                ${latency.toFixed(1)}s
+                            </span>
+                            <span class="transcript-model">${model}</span>
                         </div>
                         <div class="transcript-text">${escapeHtml(r.text)}</div>
                         <div class="waveform-container" onclick="seekAudio(event, this)">
                             <canvas></canvas>
                             <div class="waveform-progress"></div>
-                            <div class="waveform-time">0:00 / ${duration}s</div>
+                            <div class="waveform-time">0:00 / ${audioLen.toFixed(1)}s</div>
                             <div class="waveform-loading">loading waveform...</div>
                         </div>
                         <div class="transcript-footer">
@@ -801,15 +854,23 @@ HISTORY_HTML = """
             const container = transcriptEl.querySelector('.waveform-container');
             const canvas = container.querySelector('canvas');
             const loading = container.querySelector('.waveform-loading');
+            const timeDisplay = container.querySelector('.waveform-time');
 
             try {
                 let waveformData = waveformCache.get(url);
+                let duration = 0;
                 if (!waveformData) {
                     const response = await fetch(url);
                     const arrayBuffer = await response.arrayBuffer();
                     const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
                     waveformData = extractWaveform(audioBuffer, 100);
+                    waveformData.duration = audioBuffer.duration;  // store duration
                     waveformCache.set(url, waveformData);
+                }
+                duration = waveformData.duration || 0;
+                // Update time display with actual audio duration
+                if (duration > 0) {
+                    timeDisplay.textContent = '0:00 / ' + duration.toFixed(1) + 's';
                 }
                 drawWaveform(canvas, waveformData, 0);
                 loading.style.display = 'none';
@@ -971,7 +1032,12 @@ HISTORY_HTML = """
                 });
             } else if (currentSort === 'length') {
                 sorted.sort((a, b) => {
-                    const diff = a.duration_ms - b.duration_ms;
+                    const diff = (a.audio_duration_ms || 0) - (b.audio_duration_ms || 0);
+                    return sortAscending ? diff : -diff;
+                });
+            } else if (currentSort === 'latency') {
+                sorted.sort((a, b) => {
+                    const diff = (a.latency_ms || a.duration_ms || 0) - (b.latency_ms || b.duration_ms || 0);
                     return sortAscending ? diff : -diff;
                 });
             }
@@ -990,6 +1056,7 @@ HISTORY_HTML = """
             // Update button states
             document.getElementById('sort-time').classList.toggle('active', type === 'time');
             document.getElementById('sort-length').classList.toggle('active', type === 'length');
+            document.getElementById('sort-latency').classList.toggle('active', type === 'latency');
 
             // Update icons (up arrow = ascending, down arrow = descending)
             const upArrow = '<path d="M7 14l5-5 5 5z"/>';
@@ -999,6 +1066,8 @@ HISTORY_HTML = """
                 (currentSort === 'time' && sortAscending) ? upArrow : downArrow;
             document.getElementById('sort-length-icon').innerHTML =
                 (currentSort === 'length' && sortAscending) ? upArrow : downArrow;
+            document.getElementById('sort-latency-icon').innerHTML =
+                (currentSort === 'latency' && sortAscending) ? upArrow : downArrow;
 
             // Reload with new sort
             if (currentDate) {
@@ -1041,6 +1110,16 @@ HISTORY_HTML = """
                     await loadTranscripts(currentDate);
                 }
             }
+
+            // Always update today stat
+            const today = new Date().toISOString().split('T')[0];
+            try {
+                const todayRes = await fetch(`/api/transcripts/${today}`);
+                if (todayRes.ok) {
+                    const todayRecords = await todayRes.json();
+                    document.getElementById('stat-today').textContent = todayRecords.length + ' items';
+                }
+            } catch (e) {}
         }
 
         // Model status and control functions
@@ -1158,7 +1237,12 @@ HISTORY_HTML = """
 @app.get("/history", response_class=HTMLResponse)
 async def history_page():
     """Serve the history viewer HTML page."""
-    return HISTORY_HTML
+    from fastapi.responses import Response
+    return Response(
+        content=HISTORY_HTML,
+        media_type="text/html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+    )
 
 if __name__ == "__main__":
     print(f"Starting Qwen3-ASR server on {HOST}:{PORT}")
