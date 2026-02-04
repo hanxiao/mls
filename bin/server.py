@@ -746,7 +746,9 @@ HISTORY_HTML = """
                 el.onclick = () => loadTranscripts(el.dataset.date);
             });
 
-            const today = new Date().toISOString().split('T')[0];
+            // Use local date, not UTC
+            const now = new Date();
+            const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
 
             // Always fetch today's count independently
             try {
@@ -785,7 +787,7 @@ HISTORY_HTML = """
             lastRecordCount = records.length;
 
             // Update today stat
-            const today = new Date().toISOString().split('T')[0];
+            const now = new Date(); const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
             if (date === today) {
                 document.getElementById('stat-today').textContent = records.length + ' items';
             }
@@ -1112,7 +1114,7 @@ HISTORY_HTML = """
             }
 
             // Always update today stat
-            const today = new Date().toISOString().split('T')[0];
+            const now = new Date(); const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
             try {
                 const todayRes = await fetch(`/api/transcripts/${today}`);
                 if (todayRes.ok) {
