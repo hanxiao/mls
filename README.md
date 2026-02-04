@@ -2,7 +2,7 @@
 
 Local speech-to-text server for OpenClaw using Qwen3-ASR on Apple Silicon via MLX.
 
-![screenshot](screenshot.png)
+![screenshot](https://github.com/hanxiao/qwen3-asr-history/blob/main/screenshot.png?raw=true)
 
 ## Quick Start
 
