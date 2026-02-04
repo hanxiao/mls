@@ -371,8 +371,8 @@ HISTORY_HTML = """
             color: #e25f4a;
         }
         .sort-btn.active {
-            background: #1a1f36;
-            border-color: #1a1f36;
+            background: #e25f4a;
+            border-color: #e25f4a;
             color: #fff;
         }
         .sort-btn svg {
@@ -673,8 +673,8 @@ HISTORY_HTML = """
                 </select>
             </div>
             <div class="stats" id="stats">
-                <div class="stats-row"><span>total</span><span class="stats-value" id="stat-total">-</span></div>
-                <div class="stats-row"><span>today</span><span class="stats-value" id="stat-today">-</span></div>
+                <div class="stats-row"><span>total</span><span class="stats-value"><span id="stat-total">-</span> / <span id="stat-total-duration">-</span></span></div>
+                <div class="stats-row"><span>today</span><span class="stats-value"><span id="stat-today">-</span> / <span id="stat-today-duration">-</span></span></div>
             </div>
         </div>
         <div class="main">
@@ -750,18 +750,35 @@ HISTORY_HTML = """
             const now = new Date();
             const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
 
-            // Always fetch today's count independently
+            // Always fetch today's count and duration independently
             try {
                 const todayRes = await fetch(`/api/transcripts/${today}`);
                 if (todayRes.ok) {
                     const todayRecords = await todayRes.json();
                     document.getElementById('stat-today').textContent = todayRecords.length + ' items';
+                    const todayDuration = todayRecords.reduce((sum, r) => sum + (r.audio_duration_ms || 0), 0);
+                    document.getElementById('stat-today-duration').textContent = formatDurationHHMM(todayDuration);
                 } else {
                     document.getElementById('stat-today').textContent = '0 items';
+                    document.getElementById('stat-today-duration').textContent = '00:00';
                 }
             } catch (e) {
                 document.getElementById('stat-today').textContent = '0 items';
+                document.getElementById('stat-today-duration').textContent = '00:00';
             }
+
+            // Calculate total duration across all dates
+            let totalDuration = 0;
+            for (const date of dates) {
+                try {
+                    const res = await fetch(`/api/transcripts/${date}`);
+                    if (res.ok) {
+                        const records = await res.json();
+                        totalDuration += records.reduce((sum, r) => sum + (r.audio_duration_ms || 0), 0);
+                    }
+                } catch (e) {}
+            }
+            document.getElementById('stat-total-duration').textContent = formatDurationHHMM(totalDuration);
 
             // Load transcripts for display
             if (dates.includes(today)) {
@@ -1025,6 +1042,13 @@ HISTORY_HTML = """
             return m + ':' + s.toString().padStart(2, '0');
         }
 
+        function formatDurationHHMM(ms) {
+            const totalSeconds = Math.floor(ms / 1000);
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            return hours.toString().padStart(2, '0') + ':' + minutes.toString().padStart(2, '0');
+        }
+
         function sortRecords(records) {
             const sorted = [...records];
             if (currentSort === 'time') {
@@ -1123,6 +1147,8 @@ HISTORY_HTML = """
                 if (todayRes.ok) {
                     const todayRecords = await todayRes.json();
                     document.getElementById('stat-today').textContent = todayRecords.length + ' items';
+                    const todayDuration = todayRecords.reduce((sum, r) => sum + (r.audio_duration_ms || 0), 0);
+                    document.getElementById('stat-today-duration').textContent = formatDurationHHMM(todayDuration);
                 }
             } catch (e) {
                 // Network error - server may be restarting, ignore
