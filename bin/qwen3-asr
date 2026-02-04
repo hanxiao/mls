@@ -1,0 +1,65 @@
+#!/bin/bash
+# Qwen3-ASR wrapper
+# Usage: qwen3-asr <audio_file> [language]
+# Tries persistent server first, falls back to cold start
+
+PROJECT_DIR="$HOME/Documents/qwen3-asr-history"
+AUDIO_FILE="$1"
+LANGUAGE="${2:-zh}"
+SERVER_URL="http://127.0.0.1:18321"
+
+if [ -z "$AUDIO_FILE" ]; then
+    echo "Error: No audio file provided" >&2
+    echo "Usage: qwen3-asr <audio_file> [language]" >&2
+    exit 1
+fi
+
+# Get absolute path
+AUDIO_FILE=$(cd "$(dirname "$AUDIO_FILE")" && pwd)/$(basename "$AUDIO_FILE")
+
+# Try the server first (warm path)
+RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$SERVER_URL/transcribe" \
+    -H "Content-Type: application/json" \
+    -d "{\"path\": \"$AUDIO_FILE\", \"language\": \"$LANGUAGE\"}" \
+    --connect-timeout 1 2>/dev/null)
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [ "$HTTP_CODE" = "200" ]; then
+    # Extract text from JSON response
+    echo "$BODY" | grep -o '"text"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/"text"[[:space:]]*:[[:space:]]*"//;s/"$//'
+    exit 0
+fi
+
+# Server not available - fall back to cold start
+echo "Server not available, using cold start..." >&2
+
+OUTPUT_FILE="/tmp/qwen3_asr_$$.txt"
+WAV_FILE="/tmp/qwen3_asr_$$.wav"
+
+# Convert to WAV if needed
+ffmpeg -y -i "$AUDIO_FILE" -ar 16000 -ac 1 "$WAV_FILE" 2>/dev/null
+
+# Run Qwen3-ASR directly using project venv
+cd "$PROJECT_DIR"
+.venv/bin/python -m mlx_audio.stt.generate \
+    --model mlx-community/Qwen3-ASR-0.6B-bf16 \
+    --audio "$WAV_FILE" \
+    --output-path "$OUTPUT_FILE" \
+    --language "$LANGUAGE" \
+    --format txt \
+    2>/dev/null
+
+# Output the transcript
+if [ -f "${OUTPUT_FILE}.txt" ]; then
+    cat "${OUTPUT_FILE}.txt"
+    rm -f "${OUTPUT_FILE}.txt" "$WAV_FILE"
+elif [ -f "$OUTPUT_FILE" ]; then
+    cat "$OUTPUT_FILE"
+    rm -f "$OUTPUT_FILE" "$WAV_FILE"
+else
+    echo "Transcription failed" >&2
+    rm -f "$WAV_FILE"
+    exit 1
+fi
