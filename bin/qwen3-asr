@@ -3,7 +3,7 @@
 # Usage: qwen3-asr <audio_file>
 # Tries persistent server first, falls back to cold start
 
-PROJECT_DIR="$HOME/Documents/qwen3-asr-history"
+PROJECT_DIR="$HOME/Documents/mls"
 AUDIO_FILE="$1"
 SERVER_URL="http://127.0.0.1:18321"
 
