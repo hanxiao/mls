@@ -19,3 +19,5 @@ Loading translate model from /Volumes/One Touch/ai-models/mlx-community/translat
 Translate model loaded in 1.85s
 mx.metal.device_info is deprecated and will be removed in a future version. Use mx.device_info instead.
   [en->zh] 11ch -> 6ch in 0.89s
+/opt/homebrew/Cellar/python@3.14/3.14.2_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/resource_tracker.py:396: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown: {'/mp-l_hkj3c0'}
+  warnings.warn(
