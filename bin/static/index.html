@@ -1281,12 +1281,12 @@
                             <div class="waveform-loading">loading waveform...</div>
                         </div>
                         <div class="transcript-footer">
-                            <span class="transcript-file">${r.audio_file}</span>
                             <button class="play-btn" onclick="toggleAudio(this)">
                                 <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
                                 <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
                                 <span class="btn-text">play</span>
                             </button>
+                            <a href="/audio/${date}/${r.audio_file}" download class="play-btn" style="text-decoration:none;text-align:center;">download</a>
                         </div>
                     </div>
                 `;
@@ -1377,7 +1377,7 @@
         }
 
         function toggleAudio(btn) {
-            const transcriptEl = btn.closest('.transcript');
+            const transcriptEl = btn.closest('.transcript') || btn.closest('.tts-item');
             const url = transcriptEl.dataset.audioUrl;
             const container = transcriptEl.querySelector('.waveform-container');
             const canvas = container.querySelector('canvas');
@@ -1409,8 +1409,8 @@
                 });
                 // Reset waveforms
                 document.querySelectorAll('.waveform-container canvas').forEach(c => {
-                   const tEl = c.closest('.transcript');
-                   const u = tEl.dataset.audioUrl;
+                   const tEl = c.closest('.transcript') || c.closest('.tts-item');
+                   const u = tEl ? tEl.dataset.audioUrl : null;
                    const wd = waveformCache.get(u);
                    if (wd) drawWaveform(c, wd, 0); 
                 });
@@ -1447,16 +1447,17 @@
         }
 
         function seekAudio(e, container) {
+            const itemEl = container.closest('.transcript') || container.closest('.tts-item');
             if (!currentAudio) {
                 // If not playing, start playing
-                const btn = container.closest('.transcript').querySelector('.play-btn');
+                const btn = itemEl.querySelector('.play-btn');
                 toggleAudio(btn);
             }
             
             // Check if this container matches current audio
-            const url = container.closest('.transcript').dataset.audioUrl;
+            const url = itemEl.dataset.audioUrl;
             if (!currentAudio.src.endsWith(url)) {
-                 const btn = container.closest('.transcript').querySelector('.play-btn');
+                 const btn = itemEl.querySelector('.play-btn');
                  toggleAudio(btn);
             }
 
@@ -1632,7 +1633,7 @@
                             <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
                             <span class="btn-text">play</span>
                         </button>
-                        <a href="/tts_audio/${r.audio_file}" download class="icon-btn" style="margin-left:auto;width:auto;padding:0 8px;font-size:11px;">download</a>
+                        <a href="/tts_audio/${r.audio_file}" download class="play-btn" style="text-decoration:none;text-align:center;">download</a>
                     </div>
                 </div>`;
             }).join('');
