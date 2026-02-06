@@ -1265,8 +1265,8 @@ HISTORY_HTML = """
         .service-row:last-child { border-bottom: none; }
         .service-row:hover { background: rgba(255,255,255,0.03); }
         .service-row.active {
-            background: rgba(226, 95, 74, 0.12);
-            border-left: 3px solid #e25f4a;
+            background: rgba(226, 95, 74, 0.1);
+            border-left: 3px dashed #e25f4a;
         }
         .service-row-header {
             padding: 10px 16px 8px;
@@ -1590,11 +1590,11 @@ HISTORY_HTML = """
             animation: none;
         }
         .status-dot.loading {
-            background: #60a5fa;
-            animation: pulse 0.5s infinite;
+            background: #fbbf24;
+            animation: pulse 0.8s infinite;
         }
         .status-dot.error {
-            background: #f87171;
+            background: #6b7280;
             animation: none;
         }
         @keyframes pulse {
