@@ -1996,6 +1996,12 @@
                     document.getElementById('svc-model-short-asr').textContent = health.model.split('/').pop();
                     document.getElementById('status-dot').className = 'status-dot';
                 }
+                // Populate ASR model selector
+                const asrStatus = await fetch('/api/status').then(r => r.json());
+                const asrSelect = document.getElementById('model-select');
+                asrSelect.innerHTML = asrStatus.available_models.map(m =>
+                    `<option value="${m}" ${m === asrStatus.model ? 'selected' : ''}>${m.split('/').pop()}</option>`
+                ).join('');
                 // TTS status
                 if (health.tts_loaded) {
                     document.getElementById('svc-model-short-tts').textContent = health.tts_model.split('/').pop();
