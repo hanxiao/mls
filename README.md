@@ -1,22 +1,23 @@
 # <img src="logo.svg" width="30" height="30" align="top"> MLS
 
-**MLX Local Serving** — Unified local serving for ASR, TTS, and Translation on Apple Silicon.
+**MLX Local Serving** provides unified local serving for ASR, TTS, and Translation on Apple Silicon.
 
 ![screenshot](screenshot.png)
 
 ## Purpose
 
-This project exists primarily to empower **OpenClaw** with high-quality, local, privacy-first AI capabilities. It replaces cloud APIs for speech and translation, allowing the AI agent to:
-1. **Hear** (ASR) via Qwen2.5-ASR
-2. **Speak** (TTS) via Qwen2.5-TTS with custom accents (e.g., Beijing style)
-3. **Translate** via TranslateGemma 12B without leaking data
+This project empowers **OpenClaw** with high-quality, local, and privacy-first AI capabilities. It replaces cloud APIs and allows the AI agent to:
+
+1. **Hear** using Qwen2.5 ASR
+2. **Speak** using Qwen2.5 TTS with custom voice instructions
+3. **Translate** using TranslateGemma 12B without leaking data
 
 ## OpenClaw Integration
 
-Add the following to your `~/.openclaw/openclaw.json` (or `TOOLS.md`) to enable the agent to use MLS:
+Add the following to your `openclaw.json` or `TOOLS.md` to enable MLS support.
 
-### 1. Hearing (ASR)
-Configure the `media` tool to use the CLI wrapper, which automatically tries the MLS server first (fast path) before falling back to cold start.
+### 1. Hearing
+Configure the `media` tool to use the CLI wrapper. This wrapper tries the MLS server first and falls back to a cold start if needed.
 
 ```json
 {
@@ -38,20 +39,20 @@ Configure the `media` tool to use the CLI wrapper, which automatically tries the
 }
 ```
 
-### 2. Speaking & Translating (Skills)
-Since OpenClaw uses `curl` for these, register them in your `TOOLS.md` or `skills/` directory:
+### 2. Speaking and Translating
+Since OpenClaw uses `curl` for these tasks, you can register them in your `TOOLS.md` or skills directory.
 
-**TTS Skill Pattern:**
+**TTS Skill Pattern**
 ```bash
 curl -X POST http://127.0.0.1:18321/synthesize \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Hello",
-    "instruct": "A young Chinese male speaker with a Beijing accent"
+    "instruct": "A young female speaker with a cheerful tone"
   }' > output.json
 ```
 
-**Translate Skill Pattern:**
+**Translate Skill Pattern**
 ```bash
 curl -X POST http://127.0.0.1:18321/translate \
   -H "Content-Type: application/json" \
@@ -60,10 +61,10 @@ curl -X POST http://127.0.0.1:18321/translate \
 
 ## Features
 
-- **ASR**: Qwen2.5-ASR (0.6B/1.7B) - Fast, accurate speech-to-text
-- **TTS**: Qwen2.5-TTS (1.7B VoiceDesign) - Natural speech with instruct support
-- **Translate**: TranslateGemma 12B - High-quality document translation (55+ languages)
-- **Dashboard**: Unified web UI on port 18321 with accordion sidebar and mini-calendar
+* **ASR** runs Qwen2.5 ASR models for fast and accurate speech-to-text.
+* **TTS** uses Qwen2.5 TTS VoiceDesign 1.7B which supports natural speech generation from instructions.
+* **Translate** is powered by TranslateGemma 12B and handles high-quality document translation across 55 languages.
+* **Dashboard** is a unified web UI running on port 18321 with an accordion sidebar and mini-calendar.
 
 ## Quick Start
 
@@ -93,7 +94,7 @@ curl -X POST http://127.0.0.1:18321/transcribe \
 ```bash
 curl -X POST http://127.0.0.1:18321/synthesize \
   -H "Content-Type: application/json" \
-  -d '{"text": "Hello", "instruct": "Beijing accent"}' > output.json
+  -d '{"text": "Hello", "instruct": "Professional narrator"}' > output.json
 ```
 
 ### Translate
@@ -107,12 +108,12 @@ curl -X POST http://127.0.0.1:18321/translate \
 
 All models run locally on Metal GPU via MLX.
 
-- **ASR**: `mlx-community/Qwen2.5-ASR-0.6B-bf16`
-- **TTS**: `mlx-community/Qwen2.5-TTS-12Hz-1.7B-VoiceDesign-bf16`
-- **Translate**: `mlx-community/translategemma-12b-it-8bit`
+* **ASR** uses `mlx-community/Qwen2.5-ASR-0.6B-bf16` by default.
+* **TTS** uses `mlx-community/Qwen2.5-TTS-12Hz-1.7B-VoiceDesign-bf16` by default.
+* **Translate** uses `mlx-community/translategemma-12b-it-8bit`.
 
 ## Requirements
 
-- macOS 14+ with Apple Silicon
-- Python 3.12+
-- `uv` package manager
+* macOS 14+ with Apple Silicon
+* Python 3.12+
+* `uv` package manager
