@@ -1,6 +1,8 @@
-# MLS (MLX Local Serving)
+# <img src="logo.svg" width="30" height="30" align="top"> MLS
 
-Unified local serving for ASR, TTS, and Translation on Apple Silicon via MLX.
+**MLX Local Serving** — Unified local serving for ASR, TTS, and Translation on Apple Silicon.
+
+![screenshot](screenshot.png)
 
 ## Features
 

@@ -1,0 +1,16 @@
+<svg width="28" height="28" viewBox="0 0 14 14" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg">
+    <!-- Pixel Creature (Turbo 8-bit style) -->
+    <!-- Ears -->
+    <rect x="2" y="3" width="2" height="2" fill="#e25f4a"/>
+    <rect x="10" y="3" width="2" height="2" fill="#e25f4a"/>
+    <!-- Head -->
+    <rect x="3" y="5" width="8" height="6" fill="#e25f4a"/>
+    <rect x="2" y="6" width="10" height="4" fill="#e25f4a"/>
+    <!-- Eyes (White) -->
+    <rect x="4" y="7" width="1" height="1" fill="#1a1f36"/>
+    <rect x="9" y="7" width="1" height="1" fill="#1a1f36"/>
+    <!-- Nose/Mouth area -->
+    <rect x="6" y="8" width="2" height="1" fill="rgba(255,255,255,0.4)"/>
+    <!-- Highlights -->
+    <rect x="3" y="5" width="1" height="1" fill="rgba(255,255,255,0.2)"/>
+</svg>
