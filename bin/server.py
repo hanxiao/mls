@@ -16,10 +16,16 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+# mflux site-packages path (installed in separate uv tool venv, added to sys.path at load time)
+MFLUX_SITE_PACKAGES = os.path.expanduser("~/.local/share/uv/tools/mflux/lib/python3.12/site-packages")
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 import uvicorn
+
+import shutil
+
 
 # ============================================================
 # ASR globals
@@ -35,7 +41,7 @@ AVAILABLE_MODELS = [
     "mlx-community/whisper-large-v3-asr-8bit",
 ]
 
-current_model_name = "mlx-community/Qwen3-ASR-0.6B-bf16"
+current_model_name = "mlx-community/Qwen3-ASR-1.7B-8bit"
 server_paused = False
 
 # ============================================================
@@ -132,6 +138,14 @@ file_synth_jobs: dict[str, dict] = {}
 
 
 # ============================================================
+# Image Generation globals
+# ============================================================
+IMAGE_OUTPUT_DIR = PROJECT_DIR / "image_output"
+MFLUX_MODEL_PATH = "/Volumes/One Touch/ai-models/mflux/z-image-turbo-8bit/"
+image_model = None
+image_model_loading = False
+
+# ============================================================
 # ASR helpers
 # ============================================================
 
@@ -220,6 +234,34 @@ def save_translate_history(source_text: str, translated_text: str, source_lang: 
     with open(jsonl_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+
+# ============================================================
+# Image Gen helpers
+# ============================================================
+
+def save_image_history(prompt: str, image_path: str, latency_ms: float, resolution: str,
+                       seed: int | None = None, steps: int = 9):
+    """Save image generation to history."""
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    day_dir = HISTORY_DIR / date_str
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    record = {
+        "type": "image",
+        "timestamp": now.isoformat(),
+        "prompt": prompt,
+        "image_path": str(Path(image_path).resolve()),
+        "image_file": Path(image_path).name,
+        "resolution": resolution,
+        "latency_ms": round(latency_ms, 2),
+        "model": "z-image-turbo-8bit",
+        "seed": seed,
+        "steps": steps,
+    }
+    jsonl_path = day_dir / "image_history.jsonl"
+    with open(jsonl_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 # ============================================================
 # Translate helpers
@@ -366,6 +408,14 @@ class FileTranslateRequest(BaseModel):
     delimiter: str = "\n"
 
 
+class ImageGenRequest(BaseModel):
+    prompt: str
+    resolution: str = "1024x1024"  # WxH format or shorthand like 1024x1024
+    negative_prompt: str | None = None
+    seed: int | None = None
+    steps: int = 9
+
+
 def load_model(model_name: str = None):
     """Load ASR model."""
     global model, load_fn, generate_fn, current_model_name
@@ -376,12 +426,12 @@ def load_model(model_name: str = None):
     print(f"Loading ASR model {current_model_name}...")
     start = time.time()
 
-    from mlx_audio.stt import load
+    from mlx_audio.stt.utils import load_model
     from mlx_audio.stt.generate import generate_transcription
 
-    load_fn = load
+    load_fn = load_model
     generate_fn = generate_transcription
-    model = load(current_model_name)
+    model = load_model(current_model_name)
 
     elapsed = time.time() - start
     print(f"ASR model loaded in {elapsed:.2f}s")
@@ -453,6 +503,42 @@ def load_translate_model():
         translate_model_loading = False
 
 
+def load_image_model():
+    """Load Z-Image-Turbo model for persistent in-memory image generation."""
+    global image_model, image_model_loading
+
+    if not os.path.isdir(MFLUX_MODEL_PATH):
+        print(f"Image model not available (USB not mounted?): {MFLUX_MODEL_PATH}")
+        return
+
+    if not os.path.isdir(MFLUX_SITE_PACKAGES):
+        print(f"mflux site-packages not found: {MFLUX_SITE_PACKAGES}")
+        return
+
+    # Append mflux site-packages (not insert - avoid overriding venv's numpy)
+    if MFLUX_SITE_PACKAGES not in sys.path:
+        sys.path.append(MFLUX_SITE_PACKAGES)
+
+    image_model_loading = True
+    print(f"Loading image model from {MFLUX_MODEL_PATH}...")
+    start = time.time()
+
+    try:
+        from mflux.models.z_image.variants.turbo.z_image_turbo import ZImageTurbo
+
+        image_model = ZImageTurbo(
+            quantize=8,
+            model_path=MFLUX_MODEL_PATH,
+        )
+        elapsed = time.time() - start
+        print(f"Image model loaded in {elapsed:.2f}s")
+    except Exception as e:
+        print(f"Failed to load image model: {e}")
+        image_model = None
+    finally:
+        image_model_loading = False
+
+
 def convert_wav_to_ogg(wav_path: str, ogg_path: str) -> bool:
     """Convert WAV to OGG Opus using ffmpeg. Returns True on success."""
     try:
@@ -485,6 +571,7 @@ async def startup_event():
     load_model()
     load_tts_model()
     load_translate_model()
+    load_image_model()
 
 
 # ============================================================
@@ -501,6 +588,8 @@ async def health():
         "tts_loaded": tts_model is not None,
         "translate_model": translate_model_name,
         "translate_loaded": translate_model is not None,
+        "image_model": "z-image-turbo-8bit",
+        "image_loaded": image_model is not None,
     }
 
 
@@ -1201,6 +1290,107 @@ async def get_translate_history():
         for d in sorted(HISTORY_DIR.iterdir(), reverse=True):
             if d.is_dir():
                 jsonl_path = d / "translate_history.jsonl"
+                if jsonl_path.exists():
+                    with open(jsonl_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.strip():
+                                record = json.loads(line)
+                                record["date"] = d.name
+                                all_records.append(record)
+    all_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+    return JSONResponse(all_records)
+
+# ============================================================
+# Image Gen endpoints
+# ============================================================
+
+@app.get("/api/image/status")
+async def get_image_status():
+    return {
+        "model": "z-image-turbo-8bit",
+        "model_path": MFLUX_MODEL_PATH,
+        "loaded": image_model is not None,
+        "loading": image_model_loading,
+        "model_on_disk": os.path.isdir(MFLUX_MODEL_PATH),
+        "available": image_model is not None,
+    }
+
+@app.post("/api/image/generate")
+async def generate_image(req: ImageGenRequest):
+    if image_model is None:
+        raise HTTPException(503, "Image model not loaded (USB not mounted or load failed)")
+
+    start = time.time()
+    IMAGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Parse resolution to width x height
+    resolution = req.resolution.strip()
+    try:
+        if "x" in resolution.lower():
+            parts = resolution.lower().split("x")
+            width, height = int(parts[0]), int(parts[1])
+        else:
+            width = height = 1024
+    except (ValueError, IndexError):
+        width = height = 1024
+
+    file_id = uuid.uuid4().hex[:12]
+    output_file = IMAGE_OUTPUT_DIR / f"img_{file_id}.png"
+
+    try:
+        print(f"Image gen: {width}x{height}, steps={req.steps}, seed={req.seed}")
+
+        image = image_model.generate_image(
+            seed=req.seed if req.seed is not None else int(time.time()) % (2**31),
+            prompt=req.prompt,
+            width=width,
+            height=height,
+            num_inference_steps=req.steps,
+        )
+
+        image.save(path=str(output_file))
+
+        if not output_file.exists():
+            raise HTTPException(500, "Image generation produced no output file")
+
+        latency_ms = (time.time() - start) * 1000
+        save_image_history(req.prompt, str(output_file), latency_ms,
+                           f"{width}x{height}", seed=req.seed, steps=req.steps)
+
+        print(f"Image gen done: {latency_ms:.0f}ms -> {output_file.name}")
+
+        return {
+            "status": "ok",
+            "image_url": f"/image_output/{output_file.name}",
+            "image_file": output_file.name,
+            "latency_ms": round(latency_ms, 2),
+            "resolution": f"{width}x{height}",
+            "seed": req.seed,
+            "steps": req.steps,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Image gen error: {e}")
+        raise HTTPException(500, f"Image generation failed: {str(e)}")
+
+@app.get("/image_output/{filename}")
+async def get_image_file(filename: str):
+    """Serve generated image file."""
+    image_path = IMAGE_OUTPUT_DIR / filename
+    if image_path.exists():
+        return FileResponse(image_path)
+    raise HTTPException(404, "Image not found")
+
+@app.get("/api/image/history")
+async def get_image_history():
+    """Get image history."""
+    all_records = []
+    if HISTORY_DIR.exists():
+        for d in sorted(HISTORY_DIR.iterdir(), reverse=True):
+            if d.is_dir():
+                jsonl_path = d / "image_history.jsonl"
                 if jsonl_path.exists():
                     with open(jsonl_path, "r", encoding="utf-8") as f:
                         for line in f:
