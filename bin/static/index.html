@@ -796,7 +796,8 @@
                         <div class="model-name-full" id="tts-model-name" style="display:none">-</div>
                         <select class="model-select" id="tts-model-select" onchange="switchTTSModel(this.value)"></select>
                         <div class="svc-stats">
-                            <div>generated: <span id="tts-stat-total">-</span></div>
+                            <div>total: <span id="tts-stat-total">-</span> / <span id="tts-stat-total-duration">-</span></div>
+                            <div>today: <span id="tts-stat-today">-</span> / <span id="tts-stat-today-duration">-</span></div>
                         </div>
                     </div>
                 </div>
@@ -815,7 +816,8 @@
                     <div class="service-row-details" onclick="event.stopPropagation()">
                         <div class="model-name-full" id="translate-model-name" style="display:none">-</div>
                         <div class="svc-stats">
-                            <div>translations: <span id="translate-stat-total">-</span></div>
+                            <div>total: <span id="translate-stat-total">-</span></div>
+                            <div>today: <span id="translate-stat-today">-</span></div>
                         </div>
                     </div>
                 </div>
@@ -829,7 +831,8 @@
                     <div class="service-row-model" id="svc-model-short-image">z-image-turbo-8bit</div>
                     <div class="service-row-details" onclick="event.stopPropagation()">
                         <div class="svc-stats">
-                            <div>Local mflux</div>
+                            <div>total: <span id="image-stat-total">-</span></div>
+                            <div>today: <span id="image-stat-today">-</span></div>
                         </div>
                     </div>
                 </div>
@@ -1134,15 +1137,18 @@
             if (tab === 'tts') {
                 loadTTSHistory();
                 loadTTSStatus();
+                updateTTSStats();
             }
             if (tab === 'translate') {
                 loadTranslateLanguages();
                 loadTranslateStatus();
                 loadTranslateHistory();
+                updateTranslateStats();
             }
             if (tab === 'image') {
                 loadImageStatus();
                 loadImageHistory();
+                updateImageStats();
             }
         }
 
@@ -1586,8 +1592,6 @@
         async function loadTTSHistory() {
             const res = await fetch('/api/tts/history');
             const records = await res.json();
-            document.getElementById('tts-stat-total').textContent = records.length;
-            
             renderTTSHistory(records);
         }
 
@@ -1759,7 +1763,6 @@
         async function loadTranslateHistory() {
             const res = await fetch('/api/translate/history');
             const records = await res.json();
-            document.getElementById('translate-stat-total').textContent = records.length;
             renderTranslateHistory(records);
         }
         
@@ -1945,6 +1948,44 @@
             }).join('');
         }
 
+        // ========== Stats helpers ==========
+        async function updateTTSStats() {
+            try {
+                const res = await fetch('/api/tts/history');
+                const records = await res.json();
+                const today = new Date().toISOString().slice(0, 10);
+                const todayRecords = records.filter(r => r.timestamp && r.timestamp.startsWith(today));
+                const totalDur = records.reduce((s, r) => s + (r.audio_duration_ms || 0), 0);
+                const todayDur = todayRecords.reduce((s, r) => s + (r.audio_duration_ms || 0), 0);
+                document.getElementById('tts-stat-total').textContent = records.length + ' items';
+                document.getElementById('tts-stat-total-duration').textContent = formatDurationHHMM(totalDur);
+                document.getElementById('tts-stat-today').textContent = todayRecords.length + ' items';
+                document.getElementById('tts-stat-today-duration').textContent = formatDurationHHMM(todayDur);
+            } catch(e) {}
+        }
+
+        async function updateTranslateStats() {
+            try {
+                const res = await fetch('/api/translate/history');
+                const records = await res.json();
+                const today = new Date().toISOString().slice(0, 10);
+                const todayRecords = records.filter(r => r.timestamp && r.timestamp.startsWith(today));
+                document.getElementById('translate-stat-total').textContent = records.length + ' items';
+                document.getElementById('translate-stat-today').textContent = todayRecords.length + ' items';
+            } catch(e) {}
+        }
+
+        async function updateImageStats() {
+            try {
+                const res = await fetch('/api/image/history');
+                const records = await res.json();
+                const today = new Date().toISOString().slice(0, 10);
+                const todayRecords = records.filter(r => r.timestamp && r.timestamp.startsWith(today));
+                document.getElementById('image-stat-total').textContent = records.length + ' images';
+                document.getElementById('image-stat-today').textContent = todayRecords.length + ' images';
+            } catch(e) {}
+        }
+
         // Init - load all service statuses on page load
         async function initServiceStatuses() {
             try {
@@ -1971,6 +2012,11 @@
                     document.getElementById('image-status-dot').className = 'status-dot';
                 }
             } catch(e) { console.log('status fetch error', e); }
+
+            // Load stats for all services
+            updateTTSStats();
+            updateTranslateStats();
+            updateImageStats();
         }
         loadDates();
         initCalendar();
