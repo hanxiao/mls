@@ -13,6 +13,8 @@ import json
 import uuid
 import threading
 import re
+import logging
+import logging.handlers
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +27,30 @@ from pydantic import BaseModel
 import uvicorn
 
 import shutil
+
+
+# ============================================================
+# Logging setup
+# ============================================================
+LOG_DIR = Path(os.path.expanduser("~/.openclaw/workspace/logs"))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "mls.log"
+
+_log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+_file_handler = logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=10*1024*1024, backupCount=5, encoding="utf-8")
+_file_handler.setFormatter(_log_formatter)
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_log_formatter)
+
+logger = logging.getLogger("mls")
+logger.setLevel(logging.INFO)
+logger.addHandler(_file_handler)
+logger.addHandler(_console_handler)
+
+# Also capture uvicorn logs to file
+for _uv_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    _uv_logger = logging.getLogger(_uv_name)
+    _uv_logger.addHandler(_file_handler)
 
 
 # ============================================================
@@ -93,8 +119,11 @@ translate_model_dir = "/Volumes/One Touch/ai-models/mlx-community/translategemma
 translate_model_loading = False
 translate_server_paused = False
 
-# Serialize all translate inference - MLX Metal can't handle concurrent GPU access
+# Serialize all GPU inference - MLX Metal can't handle concurrent GPU access
 _translate_inference_lock = threading.Lock()
+_asr_inference_lock = threading.Lock()
+_tts_inference_lock = threading.Lock()
+_image_inference_lock = threading.Lock()
 _translate_request_count = 0
 _TRANSLATE_CACHE_CLEAR_INTERVAL = 50
 
@@ -133,6 +162,31 @@ TTS_OUTPUT_DIR = PROJECT_DIR / "tts_output"
 
 app = FastAPI(title="MLX Serving")
 
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    """Catch-all exception handler to prevent server crashes."""
+    try:
+        detail = str(exc)
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        detail = repr(exc)
+    logger.error(f"Unhandled exception on {request.url.path}: {detail}", exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": detail})
+
+
+from fastapi.exceptions import RequestValidationError
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    """Handle validation errors safely, avoiding UnicodeDecodeError."""
+    try:
+        detail = exc.errors()
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        detail = [{"msg": "Request validation failed (non-UTF-8 content)"}]
+    logger.warning(f"Validation error on {request.url.path}: {detail}")
+    return JSONResponse(status_code=422, content={"detail": detail})
+
+
 # Track background file synthesis jobs
 file_synth_jobs: dict[str, dict] = {}
 
@@ -158,7 +212,7 @@ def get_audio_duration(audio_path: str) -> float:
             capture_output=True, text=True, timeout=10
         )
         return float(result.stdout.strip()) * 1000
-    except:
+    except Exception:
         return 0.0
 
 
@@ -554,11 +608,14 @@ def convert_wav_to_ogg(wav_path: str, ogg_path: str) -> bool:
 
 def convert_to_wav(audio_path: str) -> str:
     """Convert audio to 16kHz mono WAV for best results."""
-    wav_path = tempfile.mktemp(suffix=".wav")
-    subprocess.run([
+    fd, wav_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    result = subprocess.run([
         "ffmpeg", "-y", "-i", audio_path,
         "-ar", "16000", "-ac", "1", wav_path
     ], capture_output=True)
+    if result.returncode != 0:
+        raise FileNotFoundError(f"ffmpeg conversion failed: {result.stderr[:200]}")
     return wav_path
 
 
@@ -642,7 +699,7 @@ async def switch_model(req: SwitchModelRequest):
 
 
 @app.post("/transcribe", response_model=TranscribeResponse)
-async def transcribe(req: TranscribeRequest):
+def transcribe(req: TranscribeRequest):
     global model
 
     if server_paused:
@@ -653,20 +710,22 @@ async def transcribe(req: TranscribeRequest):
         raise HTTPException(status_code=400, detail=f"Audio file not found: {req.path}")
 
     start = time.time()
-    wav_path = convert_to_wav(req.path)
-
+    wav_path = None
     try:
+        wav_path = convert_to_wav(req.path)
+
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
             output_path = f.name.replace(".txt", "")
 
-        segments = generate_fn(
-            model=model,
-            audio=wav_path,
-            output_path=output_path,
-            format="txt",
-            verbose=False,
-            language=req.language or "zh"
-        )
+        with _asr_inference_lock:
+            segments = generate_fn(
+                model=model,
+                audio=wav_path,
+                output_path=output_path,
+                format="txt",
+                verbose=False,
+                language=req.language or "zh"
+            )
 
         txt_file = output_path + ".txt"
         if os.path.exists(txt_file):
@@ -678,8 +737,14 @@ async def transcribe(req: TranscribeRequest):
                 text = " ".join(s.get("text", "") for s in segments if isinstance(s, dict))
             else:
                 text = str(segments) if segments else ""
+    except FileNotFoundError as e:
+        logger.error(f"ASR FileNotFoundError: {e}")
+        raise HTTPException(status_code=500, detail=f"Audio file processing failed: {e}")
+    except Exception as e:
+        logger.error(f"ASR transcription error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
     finally:
-        if os.path.exists(wav_path):
+        if wav_path and os.path.exists(wav_path):
             os.unlink(wav_path)
 
     latency_ms = (time.time() - start) * 1000
@@ -835,7 +900,7 @@ async def get_tts_audio(filename: str):
 
 
 @app.post("/synthesize")
-async def synthesize(req: SynthesizeRequest):
+def synthesize(req: SynthesizeRequest):
     """Synthesize speech from text."""
     global tts_model
 
@@ -876,10 +941,20 @@ async def synthesize(req: SynthesizeRequest):
             verbose=False,
             stt_model=None,
         )
-        if req.instruct:
-            gen_kwargs["instruct"] = req.instruct
+        # VoiceDesign models require an instruct parameter
+        instruct = req.instruct
+        if not instruct and tts_model_name and "VoiceDesign" in tts_model_name:
+            voice_defaults = {
+                "Chelsie": "A young American female speaker with a clear and friendly voice",
+                "Ethan": "A young American male speaker with a confident and natural voice",
+                "Vivian": "A young Chinese female speaker with a soft and warm voice",
+            }
+            instruct = voice_defaults.get(req.voice, "A young Chinese male speaker with a Beijing accent")
+        if instruct:
+            gen_kwargs["instruct"] = instruct
 
-        generate_audio(**gen_kwargs)
+        with _tts_inference_lock:
+            generate_audio(**gen_kwargs)
 
         actual_file = None
         for candidate in [
@@ -986,10 +1061,20 @@ def _synthesize_file_worker(src_path: Path, out_path: Path, language: str, voice
     segment_files = []
     errors = 0
 
+    # VoiceDesign models require instruct
+    file_instruct = None
+    if tts_model_name and "VoiceDesign" in tts_model_name:
+        voice_defaults = {
+            "Chelsie": "A young American female speaker with a clear and friendly voice",
+            "Ethan": "A young American male speaker with a confident and natural voice",
+            "Vivian": "A young Chinese female speaker with a soft and warm voice",
+        }
+        file_instruct = voice_defaults.get(voice, "A young Chinese male speaker with a Beijing accent")
+
     for i, segment in enumerate(segments):
         try:
             seg_prefix = f"seg_{i:04d}"
-            generate_audio(
+            seg_kwargs = dict(
                 text=segment,
                 model=tts_model,
                 voice=voice,
@@ -1003,6 +1088,9 @@ def _synthesize_file_worker(src_path: Path, out_path: Path, language: str, voice
                 verbose=False,
                 stt_model=None,
             )
+            if file_instruct:
+                seg_kwargs["instruct"] = file_instruct
+            generate_audio(**seg_kwargs)
 
             seg_file = None
             for candidate in [temp_dir / f"{seg_prefix}.wav", temp_dir / f"{seg_prefix}_000.wav"]:
@@ -1058,7 +1146,6 @@ def _synthesize_file_worker(src_path: Path, out_path: Path, language: str, voice
         job.update({"status": "error", "error": str(e)})
         return
     finally:
-        import shutil
         shutil.rmtree(temp_dir, ignore_errors=True)
 
     total_elapsed = time.time() - t0
@@ -1316,7 +1403,7 @@ async def get_image_status():
     }
 
 @app.post("/api/image/generate")
-async def generate_image(req: ImageGenRequest):
+def generate_image(req: ImageGenRequest):
     if image_model is None:
         raise HTTPException(503, "Image model not loaded (USB not mounted or load failed)")
 
@@ -1340,13 +1427,14 @@ async def generate_image(req: ImageGenRequest):
     try:
         print(f"Image gen: {width}x{height}, steps={req.steps}, seed={req.seed}")
 
-        image = image_model.generate_image(
-            seed=req.seed if req.seed is not None else int(time.time()) % (2**31),
-            prompt=req.prompt,
-            width=width,
-            height=height,
-            num_inference_steps=req.steps,
-        )
+        with _image_inference_lock:
+            image = image_model.generate_image(
+                seed=req.seed if req.seed is not None else int(time.time()) % (2**31),
+                prompt=req.prompt,
+                width=width,
+                height=height,
+                num_inference_steps=req.steps,
+            )
 
         image.save(path=str(output_file))
 
@@ -1422,5 +1510,6 @@ async def history_page():
     )
 
 if __name__ == "__main__":
-    print(f"Starting MLX Serving on {HOST}:{PORT}")
+    logger.info(f"Starting MLX Serving on {HOST}:{PORT}")
+    logger.info(f"Log file: {LOG_FILE}")
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")

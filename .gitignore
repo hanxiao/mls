@@ -7,3 +7,5 @@ logs/
 .DS_Store
 tts_output/
 image_output/
+manual.log
+manual.pid

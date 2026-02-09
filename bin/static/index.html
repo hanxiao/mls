@@ -907,6 +907,7 @@
                         </select>
                         <label style="font-size:11px;color:#9ca3af;">speed:</label>
                         <input type="number" class="tts-speed-input" id="tts-speed" value="1.0" min="0.5" max="2.0" step="0.1">
+                        <input type="text" class="tts-speed-input" id="tts-instruct" placeholder="Voice instruct (optional)" style="width:220px;font-size:11px;">
                         <button class="synthesize-btn" id="synthesize-btn" onclick="synthesize()">
                             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
                             <span id="synthesize-btn-text">Synthesize</span>
@@ -1646,6 +1647,7 @@
             const voice = document.getElementById('tts-voice-select').value;
             const lang = document.getElementById('tts-lang-select').value;
             const speed = parseFloat(document.getElementById('tts-speed').value);
+            const instruct = document.getElementById('tts-instruct').value.trim() || null;
             
             const btn = document.getElementById('synthesize-btn');
             const btnText = document.getElementById('synthesize-btn-text');
@@ -1653,10 +1655,12 @@
             btnText.textContent = 'Generating...';
             
             try {
+                const payload = {text, voice, language: lang, speed};
+                if (instruct) payload.instruct = instruct;
                 const res = await fetch('/synthesize', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({text, voice, language: lang, speed})
+                    body: JSON.stringify(payload)
                 });
                 
                 if (!res.ok) throw new Error(await res.text());
