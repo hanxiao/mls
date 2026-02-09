@@ -220,6 +220,7 @@ SUPPORTED_TRANSLATE_LANGS = {
 
 HOST = "127.0.0.1"
 PORT = 18321
+_SERVER_START_TIME = time.time()
 PROJECT_DIR = Path(__file__).parent.parent.resolve()
 HISTORY_DIR = PROJECT_DIR / "history"
 TTS_OUTPUT_DIR = PROJECT_DIR / "tts_output"
@@ -2072,6 +2073,7 @@ async def get_gpu_stats():
     # Queue count is live, not cached
     stats["gpu_queue_waiting"] = _gpu_queue_waiting
     stats["gpu_lock_held"] = _gpu_lock.locked()
+    stats["uptime_s"] = int(time.time() - _SERVER_START_TIME)
     return stats
 
 
@@ -2154,6 +2156,21 @@ async def stream_logs():
 
     return StreamingResponse(_generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ============================================================
+# Server restart (re-exec process to pick up code changes)
+# ============================================================
+
+@app.post("/restart")
+async def restart_process():
+    """Restart the entire server process to load new code changes."""
+    def _do_restart():
+        time.sleep(0.5)  # let response flush
+        logger.info("Server restarting via /restart endpoint")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    threading.Thread(target=_do_restart, daemon=True).start()
+    return {"status": "restarting"}
 
 
 # ============================================================

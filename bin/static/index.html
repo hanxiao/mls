@@ -150,6 +150,11 @@
         .theme-btn:hover { color: var(--sb-text-2); border-color: var(--sb-input-border); }
         .theme-btn:active { background: var(--accent-bg); }
         .theme-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+        .uptime-widget { padding: 6px 10px; border-top: 1px solid var(--sb-border); display: flex; align-items: center; gap: 6px; }
+        .uptime-label { font-size: 8px; color: var(--sb-text-3); text-transform: uppercase; letter-spacing: 0.3px; }
+        .uptime-value { font-size: 8px; color: var(--sb-text-2); flex: 1; }
+        .restart-btn { background: none; border: 1px solid var(--sb-border); border-radius: 3px; color: var(--sb-text-3); font: 8px 'JetBrains Mono', monospace; padding: 2px 6px; cursor: pointer; transition: all 0.15s; }
+        .restart-btn:hover { color: var(--accent); border-color: var(--accent); }
 
         /* Sidebar misc */
         .sidebar-sub { display: none; }
@@ -280,6 +285,7 @@
         .image-result img { max-width: 100%; max-height: 500px; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
         .image-item-thumb, .vision-item-thumb { width: 100px; height: 100px; object-fit: cover; border-radius: 4px; background: var(--surface-alt); cursor: pointer; }
         .vision-item-thumb { flex-shrink: 0; }
+        .img-broken { display: none; }
         .image-item-details, .vision-item-details { flex: 1; }
         .image-item-prompt { font-size: 13px; line-height: 1.5; color: var(--text); margin-bottom: 8px; }
         .image-item-meta { font-size: 11px; color: var(--text-2); display: flex; gap: 12px; align-items: center; }
@@ -456,6 +462,11 @@
                     <div class="log-chart" id="log-chart"></div>
                 </div>
 
+                <div class="uptime-widget">
+                    <span class="uptime-label">uptime</span>
+                    <span class="uptime-value" id="uptime-val">--</span>
+                    <button class="restart-btn" onclick="restartServer()" title="Restart server process">restart</button>
+                </div>
                 <div class="theme-toggle">
                     <button class="theme-btn" onclick="setTheme('light')" id="theme-light">light</button>
                     <button class="theme-btn" onclick="setTheme('dark')" id="theme-dark">dark</button>
@@ -707,6 +718,7 @@
         // ========== Shared state ==========
         let currentTab = 'asr';
         let currentAudio = null;
+        let _serverStartEpoch = 0;
         const historySortState = {
             tts: { field: 'time', ascending: false },
             translate: { field: 'time', ascending: false },
@@ -715,6 +727,7 @@
         };
         let _lastHistoryData = { tts: [], translate: [], image: [], vision: [] };
         let _prevHistoryCounts = { asr: -1, tts: -1, translate: -1, image: -1, vision: -1 };
+        const _failedImages = new Set();
 
         function flashServiceRow(service) {
             const row = document.getElementById('svc-row-' + service);
@@ -1167,14 +1180,73 @@
 
         function waveformCacheSet(url, data) {
             if (waveformCache.size >= WAVEFORM_CACHE_MAX) {
-                // Evict oldest entry (first key in Map insertion order)
                 const oldest = waveformCache.keys().next().value;
                 waveformCache.delete(oldest);
             }
-            waveformCacheSet(url, data);
+            waveformCache.set(url, data);
         }
 
-        async function loadWaveform(transcriptEl) {
+        // Concurrency-limited waveform loader
+        let _wfActive = 0;
+        const _wfMaxConcurrent = 3;
+        const _wfQueue = [];
+
+        function _wfNext() {
+            while (_wfActive < _wfMaxConcurrent && _wfQueue.length > 0) {
+                const fn = _wfQueue.shift();
+                _wfActive++;
+                fn().finally(() => { _wfActive--; _wfNext(); });
+            }
+        }
+
+        function _wfEnqueue(fn) {
+            _wfQueue.push(fn);
+            _wfNext();
+        }
+
+        // IntersectionObserver: only load waveforms when visible
+        const _wfObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    _wfObserver.unobserve(entry.target);
+                    _wfEnqueue(() => _loadWaveformCore(entry.target));
+                }
+            });
+        }, { rootMargin: '200px' });
+
+        function loadWaveform(transcriptEl) {
+            const url = transcriptEl.dataset.audioUrl;
+            if (!url) return;
+            const container = transcriptEl.querySelector('.waveform-container');
+            if (!container) return;
+            // Already loaded or observed - skip
+            if (container.dataset.wfState) return;
+            const cached = waveformCache.get(url);
+            if (cached === false) {
+                container.dataset.wfState = 'done';
+                const loading = container.querySelector('.waveform-loading');
+                if (loading) loading.textContent = 'audio not available';
+                return;
+            }
+            if (cached) {
+                // Cache hit - draw immediately, no observer needed
+                container.dataset.wfState = 'done';
+                const canvas = container.querySelector('canvas');
+                const loading = container.querySelector('.waveform-loading');
+                const timeDisplay = container.querySelector('.waveform-time');
+                if (cached.duration > 0 && timeDisplay) {
+                    timeDisplay.textContent = '0:00 / ' + cached.duration.toFixed(1) + 's';
+                }
+                drawWaveform(canvas, cached, 0);
+                if (loading) loading.style.display = 'none';
+                return;
+            }
+            // Mark as pending and observe for visibility
+            container.dataset.wfState = 'pending';
+            _wfObserver.observe(transcriptEl);
+        }
+
+        async function _loadWaveformCore(transcriptEl) {
             const url = transcriptEl.dataset.audioUrl;
             const container = transcriptEl.querySelector('.waveform-container');
             if (!container) return;
@@ -1186,14 +1258,15 @@
                 let waveformData = waveformCache.get(url);
                 if (waveformData === false) {
                     if (loading) loading.textContent = 'audio not available';
+                    container.dataset.wfState = 'done';
                     return;
                 }
-                let duration = 0;
                 if (!waveformData) {
                     const response = await fetch(url);
                     if (!response.ok) {
                         waveformCacheSet(url, false);
                         if (loading) loading.textContent = 'audio not available';
+                        container.dataset.wfState = 'done';
                         return;
                     }
                     const arrayBuffer = await response.arrayBuffer();
@@ -1202,15 +1275,17 @@
                     waveformData.duration = audioBuffer.duration;
                     waveformCacheSet(url, waveformData);
                 }
-                duration = waveformData.duration || 0;
+                const duration = waveformData.duration || 0;
                 if (duration > 0 && timeDisplay) {
                     timeDisplay.textContent = '0:00 / ' + duration.toFixed(1) + 's';
                 }
                 drawWaveform(canvas, waveformData, 0);
                 if (loading) loading.style.display = 'none';
+                container.dataset.wfState = 'done';
             } catch (e) {
                 waveformCacheSet(url, false);
                 if (loading) loading.textContent = 'audio not available';
+                container.dataset.wfState = 'done';
             }
         }
 
@@ -1843,7 +1918,7 @@
                 
                 return `
                 <div class="image-item">
-                    <img src="${imageUrl}" class="image-item-thumb" onclick="window.open('${imageUrl}', '_blank')">
+                    <img src="${_failedImages.has(imageUrl) ? '' : imageUrl}" class="image-item-thumb${_failedImages.has(imageUrl) ? ' img-broken' : ''}" onclick="window.open('${imageUrl}', '_blank')" onerror="this.onerror=null;this.src='';this.classList.add('img-broken');_failedImages.add('${imageUrl}')">
                     <div class="image-item-details">
                         <div class="transcript-header">
                             <span class="transcript-time">${time}</span>
@@ -1977,7 +2052,7 @@
                 const imageUrl = '/vision_output/' + r.image_file;
 
                 return '<div class="vision-item">' +
-                    '<img src="' + imageUrl + '" class="vision-item-thumb" onclick="window.open(\'' + imageUrl + '\', \'_blank\')">' +
+                    '<img src="' + (_failedImages.has(imageUrl) ? '' : imageUrl) + '" class="vision-item-thumb' + (_failedImages.has(imageUrl) ? ' img-broken' : '') + '" onclick="window.open(\'' + imageUrl + '\', \'_blank\')" onerror="this.onerror=null;this.src=\'\';this.classList.add(\'img-broken\');_failedImages.add(\'' + imageUrl + '\')">' +
                     '<div class="vision-item-details">' +
                         '<div class="transcript-header">' +
                             '<span class="transcript-time">' + time + '</span>' +
@@ -2206,7 +2281,29 @@
                 queueBar.style.width = queuePct + '%';
                 queueBar.className = 'gpu-bar-fill ' + (queueTotal >= 4 ? 'hot' : queueTotal >= 2 ? 'warm' : queueTotal >= 1 ? 'cool' : 'cool');
                 document.getElementById('queue-val').textContent = queueTotal;
+
+                // Sync server start epoch for uptime ticker
+                if (g.uptime_s != null) {
+                    _serverStartEpoch = Date.now() / 1000 - g.uptime_s;
+                }
             } catch(e) {}
+        }
+
+        async function restartServer() {
+            if (!confirm('Restart server? All models will reload.')) return;
+            try {
+                await fetch('/restart', { method: 'POST' });
+            } catch(e) {}
+            // Server will drop connection; wait and reload page
+            document.getElementById('uptime-val').textContent = 'restarting...';
+            setTimeout(() => {
+                const poll = setInterval(async () => {
+                    try {
+                        const res = await fetch('/health');
+                        if (res.ok) { clearInterval(poll); location.reload(); }
+                    } catch(e) {}
+                }, 1000);
+            }, 2000);
         }
 
         // Theme switching
@@ -2310,6 +2407,17 @@
             else if (activeTab === 'image') updateImageStats();
             else if (activeTab === 'vision') updateVisionStats();
         }, 3000);
+
+        // Uptime ticker (1s)
+        setInterval(() => {
+            if (!_serverStartEpoch) return;
+            const uptime = Math.floor(Date.now() / 1000 - _serverStartEpoch);
+            const h = Math.floor(uptime / 3600);
+            const m = Math.floor((uptime % 3600) / 60);
+            const s = uptime % 60;
+            document.getElementById('uptime-val').textContent =
+                h > 0 ? h + 'h ' + m + 'm' : m > 0 ? m + 'm ' + s + 's' : s + 's';
+        }, 1000);
 
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
