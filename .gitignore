@@ -3,7 +3,6 @@ __pycache__/
 *.pyc
 history/
 logs/
-*.plist
 .DS_Store
 tts_output/
 image_output/

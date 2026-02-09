@@ -4,6 +4,7 @@ MLX Serving - Unified ASR + TTS + Translate server.
 Keeps models loaded in memory for fast inference.
 Saves transcription/synthesis/translation history to ~/Documents/qwen3-asr-history/history/
 """
+import gc
 import os
 import sys
 import tempfile
@@ -18,11 +19,20 @@ import logging.handlers
 from datetime import datetime
 from pathlib import Path
 
+import mlx.core as mx
+from mlx_lm import load as mlx_load, stream_generate
+from mlx_audio.stt.utils import load_model as stt_load_model
+from mlx_audio.stt.generate import generate_transcription
+from mlx_audio.tts.utils import load_model as tts_load_fn
+from mlx_audio.tts.generate import generate_audio
+
 # mflux site-packages path (installed in separate uv tool venv, added to sys.path at load time)
+# mflux import stays deferred because it depends on sys.path setup at runtime
 MFLUX_SITE_PACKAGES = os.path.expanduser("~/.local/share/uv/tools/mflux/lib/python3.12/site-packages")
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 import uvicorn
 
@@ -119,13 +129,23 @@ translate_model_dir = "/Volumes/One Touch/ai-models/mlx-community/translategemma
 translate_model_loading = False
 translate_server_paused = False
 
-# Serialize all GPU inference - MLX Metal can't handle concurrent GPU access
-_translate_inference_lock = threading.Lock()
-_asr_inference_lock = threading.Lock()
-_tts_inference_lock = threading.Lock()
-_image_inference_lock = threading.Lock()
-_translate_request_count = 0
-_TRANSLATE_CACHE_CLEAR_INTERVAL = 50
+# Single lock for ALL GPU inference - MLX Metal cannot handle concurrent GPU access.
+# Separate per-service locks allowed ASR+TTS+Translate+Image to hit the GPU
+# simultaneously, causing Metal OOM crashes.
+_gpu_lock = threading.Lock()
+_gpu_request_count = 0
+_GPU_CACHE_CLEAR_INTERVAL = 20
+
+
+def _maybe_clear_gpu_cache():
+    """Clear Metal cache periodically to prevent memory buildup.
+    Must be called while holding _gpu_lock."""
+    global _gpu_request_count
+    _gpu_request_count += 1
+    if _gpu_request_count % _GPU_CACHE_CLEAR_INTERVAL == 0:
+        mx.metal.clear_cache()
+        logger.info(f"Metal cache cleared (request #{_gpu_request_count})")
+
 
 # Track background file translations
 translate_file_jobs: dict[str, dict] = {}
@@ -173,8 +193,6 @@ async def global_exception_handler(request, exc):
     logger.error(f"Unhandled exception on {request.url.path}: {detail}", exc_info=True)
     return JSONResponse(status_code=500, content={"detail": detail})
 
-
-from fastapi.exceptions import RequestValidationError
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
@@ -323,16 +341,12 @@ def save_image_history(prompt: str, image_path: str, latency_ms: float, resoluti
 
 def translate_text(text: str, source: str, target: str) -> tuple[str, float]:
     """Translate a single text. Returns (translation, elapsed_seconds).
-    Thread-safe: uses _translate_inference_lock to serialize Metal GPU access."""
-    with _translate_inference_lock:
+    Thread-safe: uses _gpu_lock to serialize Metal GPU access."""
+    with _gpu_lock:
         return _translate_text_impl(text, source, target)
 
 
 def _translate_text_impl(text: str, source: str, target: str) -> tuple[str, float]:
-    global _translate_request_count
-    import mlx.core as mx
-    from mlx_lm import stream_generate
-
     messages = [
         {"role": "user", "content": [
             {"type": "text", "text": text,
@@ -357,12 +371,7 @@ def _translate_text_impl(text: str, source: str, target: str) -> tuple[str, floa
     elapsed = time.time() - t0
 
     clean = "".join(result_parts).strip()
-
-    # Periodic Metal cache clear to prevent long-running buildup
-    _translate_request_count += 1
-    if _translate_request_count % _TRANSLATE_CACHE_CLEAR_INTERVAL == 0:
-        mx.metal.clear_cache()
-
+    _maybe_clear_gpu_cache()
     return clean, elapsed
 
 
@@ -480,12 +489,9 @@ def load_model(model_name: str = None):
     print(f"Loading ASR model {current_model_name}...")
     start = time.time()
 
-    from mlx_audio.stt.utils import load_model
-    from mlx_audio.stt.generate import generate_transcription
-
-    load_fn = load_model
+    load_fn = stt_load_model
     generate_fn = generate_transcription
-    model = load_model(current_model_name)
+    model = stt_load_model(current_model_name)
 
     elapsed = time.time() - start
     print(f"ASR model loaded in {elapsed:.2f}s")
@@ -504,8 +510,6 @@ def load_tts_model(model_name: str = None):
     start = time.time()
 
     try:
-        from mlx_audio.tts.utils import load_model as tts_load
-
         # Try USB path first for all models
         usb_base = "/Volumes/One Touch/ai-models/mlx-community"
         usb_path = os.path.join(usb_base, tts_model_name.split("/")[-1])
@@ -514,7 +518,7 @@ def load_tts_model(model_name: str = None):
         else:
             model_path = tts_model_name
 
-        tts_model = tts_load(model_path=model_path)
+        tts_model = tts_load_fn(model_path=model_path)
 
         elapsed = time.time() - start
         print(f"TTS model loaded in {elapsed:.2f}s")
@@ -545,7 +549,6 @@ def load_translate_model():
     start = time.time()
 
     try:
-        from mlx_lm import load as mlx_load
         translate_model, translate_tokenizer = mlx_load(translate_model_dir)
         elapsed = time.time() - start
         print(f"Translate model loaded in {elapsed:.2f}s")
@@ -625,10 +628,14 @@ def convert_to_wav(audio_path: str) -> str:
 
 @app.on_event("startup")
 async def startup_event():
-    load_model()
-    load_tts_model()
-    load_translate_model()
-    load_image_model()
+    """Load models in a background thread so /health and /history are available immediately."""
+    def _load_all_models():
+        load_model()
+        load_tts_model()
+        load_translate_model()
+        load_image_model()
+        logger.info("All models loaded")
+    threading.Thread(target=_load_all_models, daemon=True).start()
 
 
 # ============================================================
@@ -717,7 +724,7 @@ def transcribe(req: TranscribeRequest):
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
             output_path = f.name.replace(".txt", "")
 
-        with _asr_inference_lock:
+        with _gpu_lock:
             segments = generate_fn(
                 model=model,
                 audio=wav_path,
@@ -726,6 +733,7 @@ def transcribe(req: TranscribeRequest):
                 verbose=False,
                 language=req.language or "zh"
             )
+            _maybe_clear_gpu_cache()
 
         txt_file = output_path + ".txt"
         if os.path.exists(txt_file):
@@ -836,8 +844,8 @@ async def switch_tts_model(req: SwitchTTSModelRequest):
     if req.model not in AVAILABLE_TTS_MODELS:
         raise HTTPException(status_code=400, detail=f"TTS model not available: {req.model}")
     tts_model = None
-    import gc
     gc.collect()
+    mx.metal.clear_cache()
     load_tts_model(req.model)
     return {"status": "switched", "model": tts_model_name}
 
@@ -920,8 +928,6 @@ def synthesize(req: SynthesizeRequest):
     output_file = TTS_OUTPUT_DIR / f"{file_prefix}.wav"
 
     try:
-        from mlx_audio.tts.generate import generate_audio
-
         lang_map = {"zh": "chinese", "en": "english", "de": "german",
                      "it": "italian", "pt": "portuguese", "es": "spanish",
                      "ja": "japanese", "ko": "korean", "fr": "french", "ru": "russian"}
@@ -953,8 +959,9 @@ def synthesize(req: SynthesizeRequest):
         if instruct:
             gen_kwargs["instruct"] = instruct
 
-        with _tts_inference_lock:
+        with _gpu_lock:
             generate_audio(**gen_kwargs)
+            _maybe_clear_gpu_cache()
 
         actual_file = None
         for candidate in [
@@ -1050,8 +1057,6 @@ def _synthesize_file_worker(src_path: Path, out_path: Path, language: str, voice
 
     job["segments"] = len(segments)
 
-    from mlx_audio.tts.generate import generate_audio
-
     lang_map = {"zh": "chinese", "en": "english", "de": "german",
                 "it": "italian", "pt": "portuguese", "es": "spanish",
                 "ja": "japanese", "ko": "korean", "fr": "french", "ru": "russian"}
@@ -1090,7 +1095,9 @@ def _synthesize_file_worker(src_path: Path, out_path: Path, language: str, voice
             )
             if file_instruct:
                 seg_kwargs["instruct"] = file_instruct
-            generate_audio(**seg_kwargs)
+            with _gpu_lock:
+                generate_audio(**seg_kwargs)
+                _maybe_clear_gpu_cache()
 
             seg_file = None
             for candidate in [temp_dir / f"{seg_prefix}.wav", temp_dir / f"{seg_prefix}_000.wav"]:
@@ -1220,8 +1227,8 @@ async def resume_tts_server():
 async def restart_tts_server():
     global tts_model
     tts_model = None
-    import gc
     gc.collect()
+    mx.metal.clear_cache()
     load_tts_model()
     return {"status": "restarted", "model": tts_model_name}
 
@@ -1262,8 +1269,8 @@ async def restart_translate_server():
     global translate_model, translate_tokenizer
     translate_model = None
     translate_tokenizer = None
-    import gc
     gc.collect()
+    mx.metal.clear_cache()
     load_translate_model()
     return {"status": "restarted", "model": translate_model_name}
 
@@ -1427,7 +1434,7 @@ def generate_image(req: ImageGenRequest):
     try:
         print(f"Image gen: {width}x{height}, steps={req.steps}, seed={req.seed}")
 
-        with _image_inference_lock:
+        with _gpu_lock:
             image = image_model.generate_image(
                 seed=req.seed if req.seed is not None else int(time.time()) % (2**31),
                 prompt=req.prompt,
@@ -1435,6 +1442,8 @@ def generate_image(req: ImageGenRequest):
                 height=height,
                 num_inference_steps=req.steps,
             )
+            # Image gen is the biggest memory consumer - always clear cache after
+            mx.metal.clear_cache()
 
         image.save(path=str(output_file))
 
@@ -1512,4 +1521,5 @@ async def history_page():
 if __name__ == "__main__":
     logger.info(f"Starting MLX Serving on {HOST}:{PORT}")
     logger.info(f"Log file: {LOG_FILE}")
-    uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
+    # Limit threadpool: only 1 GPU so extra threads just waste memory waiting on _gpu_lock
+    uvicorn.run(app, host=HOST, port=PORT, log_level="warning", workers=1)

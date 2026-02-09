@@ -392,7 +392,7 @@
             animation: pulse 0.8s infinite;
         }
         .status-dot.error {
-            background: #6b7280;
+            background: #ef4444;
             animation: none;
         }
         @keyframes pulse {
@@ -763,7 +763,7 @@
                 <!-- ASR row -->
                 <div class="service-row active expanded" id="svc-row-asr" onclick="onServiceRowClick(event, 'asr')">
                     <div class="service-row-header">
-                        <div class="status-dot" id="status-dot"></div>
+                        <div class="status-dot loading" id="status-dot"></div>
                         <span class="service-row-name">ASR</span>
                         <span class="svc-header-actions" onclick="event.stopPropagation()">
                             <button class="icon-btn" id="btn-pause" onclick="togglePause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg></button>
@@ -784,7 +784,7 @@
                 <!-- TTS row -->
                 <div class="service-row" id="svc-row-tts" onclick="onServiceRowClick(event, 'tts')">
                     <div class="service-row-header">
-                        <div class="status-dot" id="tts-status-dot"></div>
+                        <div class="status-dot loading" id="tts-status-dot"></div>
                         <span class="service-row-name">TTS</span>
                         <span class="svc-header-actions" onclick="event.stopPropagation()">
                             <button class="icon-btn" id="tts-btn-pause" onclick="toggleTTSPause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg></button>
@@ -805,7 +805,7 @@
                 <!-- Translate row -->
                 <div class="service-row" id="svc-row-translate" onclick="onServiceRowClick(event, 'translate')">
                     <div class="service-row-header">
-                        <div class="status-dot" id="translate-status-dot"></div>
+                        <div class="status-dot loading" id="translate-status-dot"></div>
                         <span class="service-row-name">Translate</span>
                         <span class="svc-header-actions" onclick="event.stopPropagation()">
                             <button class="icon-btn" id="translate-btn-pause" onclick="toggleTranslatePause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg></button>
@@ -825,7 +825,7 @@
                 <!-- Image row -->
                 <div class="service-row" id="svc-row-image" onclick="onServiceRowClick(event, 'image')">
                     <div class="service-row-header">
-                        <div class="status-dot" id="image-status-dot"></div>
+                        <div class="status-dot loading" id="image-status-dot"></div>
                         <span class="service-row-name">Image</span>
                     </div>
                     <div class="service-row-model" id="svc-model-short-image">z-image-turbo-8bit</div>
@@ -1403,10 +1403,10 @@
             // Stop previous audio
             if (currentAudio) {
                 currentAudio.pause();
-                document.querySelectorAll('.play-btn').forEach(b => {
-                    b.querySelector('.icon-play').style.display = 'block';
-                    b.querySelector('.icon-pause').style.display = 'none';
-                    b.querySelector('.btn-text').textContent = 'play';
+                document.querySelectorAll('button.play-btn').forEach(b => {
+                    if (b.querySelector('.icon-play')) b.querySelector('.icon-play').style.display = 'block';
+                    if (b.querySelector('.icon-pause')) b.querySelector('.icon-pause').style.display = 'none';
+                    if (b.querySelector('.btn-text')) b.querySelector('.btn-text').textContent = 'play';
                 });
                 // Reset waveforms
                 document.querySelectorAll('.waveform-container canvas').forEach(c => {
@@ -1567,14 +1567,14 @@
         async function loadTTSStatus() {
             const res = await fetch('/api/tts/status');
             const status = await res.json();
-            
+
             document.getElementById('svc-model-short-tts').textContent = status.model_short;
             document.getElementById('tts-model-name').textContent = status.model;
-            
+
             const dot = document.getElementById('tts-status-dot');
             dot.className = 'status-dot';
-            if (status.paused) dot.classList.add('paused');
-            if (status.loading) dot.classList.add('loading');
+            if (!status.loaded) dot.classList.add(status.loading ? 'loading' : 'error');
+            else if (status.paused) dot.classList.add('paused');
             
             // Populate models
             const select = document.getElementById('tts-model-select');
@@ -1699,14 +1699,14 @@
         async function loadTranslateStatus() {
             const res = await fetch('/api/translate/status');
             const status = await res.json();
-            
+
             document.getElementById('svc-model-short-translate').textContent = 'TranslateGemma';
             document.getElementById('translate-model-name').textContent = status.model;
-            
+
             const dot = document.getElementById('translate-status-dot');
             dot.className = 'status-dot';
-            if (status.paused) dot.classList.add('paused');
-            if (status.loading) dot.classList.add('loading');
+            if (!status.loaded) dot.classList.add(status.loading ? 'loading' : 'error');
+            else if (status.paused) dot.classList.add('paused');
         }
 
         async function loadTranslateLanguages() {
@@ -1860,11 +1860,13 @@
         async function loadImageStatus() {
             const res = await fetch('/api/image/status');
             const status = await res.json();
-            
+
             const dot = document.getElementById('image-status-dot');
             dot.className = 'status-dot';
-            if (status.available) {
+            if (status.loaded) {
                 // green
+            } else if (status.loading) {
+                dot.classList.add('loading');
             } else {
                 dot.classList.add('error');
             }
@@ -1991,50 +1993,84 @@
             } catch(e) {}
         }
 
-        // Init - load all service statuses on page load
-        async function initServiceStatuses() {
+        // Update a service dot: green=loaded, yellow=loading, red=not loaded
+        function updateDot(dotId, loaded, loading) {
+            const dot = document.getElementById(dotId);
+            if (!dot) return;
+            dot.className = 'status-dot';
+            if (loaded) {
+                // green (default)
+            } else if (loading) {
+                dot.classList.add('loading');
+            } else {
+                dot.classList.add('error');
+            }
+        }
+
+        // Poll /health and update all 4 sidebar dots + model names
+        let _allModelsReady = false;
+        async function refreshServiceStatuses() {
             try {
-                // ASR status
-                const asrRes = await fetch('/health');
-                const health = await asrRes.json();
+                const health = await fetch('/health').then(r => r.json());
+
+                // ASR
+                updateDot('status-dot', health.loaded, !health.loaded);
+                document.getElementById('svc-model-short-asr').textContent =
+                    health.loaded ? health.model.split('/').pop() : 'loading...';
+
+                // TTS
+                updateDot('tts-status-dot', health.tts_loaded, !health.tts_loaded);
+                document.getElementById('svc-model-short-tts').textContent =
+                    health.tts_loaded ? health.tts_model.split('/').pop() : 'loading...';
+
+                // Translate
+                updateDot('translate-status-dot', health.translate_loaded, !health.translate_loaded);
+                document.getElementById('svc-model-short-translate').textContent =
+                    health.translate_loaded ? 'TranslateGemma' : 'loading...';
+
+                // Image
+                updateDot('image-status-dot', health.image_loaded, !health.image_loaded);
+                document.getElementById('svc-model-short-image').textContent =
+                    health.image_loaded ? health.image_model : 'loading...';
+
+                _allModelsReady = health.loaded && health.tts_loaded
+                    && health.translate_loaded && health.image_loaded;
+
+                // Populate ASR model selector once loaded
                 if (health.loaded) {
-                    document.getElementById('svc-model-short-asr').textContent = health.model.split('/').pop();
-                    document.getElementById('status-dot').className = 'status-dot';
+                    const asrSelect = document.getElementById('model-select');
+                    if (asrSelect && asrSelect.options.length <= 1) {
+                        const asrStatus = await fetch('/api/status').then(r => r.json());
+                        asrSelect.innerHTML = asrStatus.available_models.map(m =>
+                            `<option value="${m}" ${m === asrStatus.model ? 'selected' : ''}>${m.split('/').pop()}</option>`
+                        ).join('');
+                    }
                 }
-                // Populate ASR model selector
-                const asrStatus = await fetch('/api/status').then(r => r.json());
-                const asrSelect = document.getElementById('model-select');
-                asrSelect.innerHTML = asrStatus.available_models.map(m =>
-                    `<option value="${m}" ${m === asrStatus.model ? 'selected' : ''}>${m.split('/').pop()}</option>`
-                ).join('');
-                // TTS status
-                if (health.tts_loaded) {
-                    document.getElementById('svc-model-short-tts').textContent = health.tts_model.split('/').pop();
-                    document.getElementById('tts-status-dot').className = 'status-dot';
-                }
-                // Translate status
-                if (health.translate_loaded) {
-                    document.getElementById('svc-model-short-translate').textContent = 'TranslateGemma';
-                    document.getElementById('translate-status-dot').className = 'status-dot';
-                }
-                // Image status
-                if (health.image_loaded) {
-                    document.getElementById('svc-model-short-image').textContent = health.image_model;
-                    document.getElementById('image-status-dot').className = 'status-dot';
-                }
-            } catch(e) { console.log('status fetch error', e); }
+            } catch(e) {
+                // Server not up yet - mark everything as loading
+                ['status-dot', 'tts-status-dot', 'translate-status-dot', 'image-status-dot'].forEach(id => {
+                    updateDot(id, false, true);
+                });
+            }
 
             // Load stats for all services
             updateTTSStats();
             updateTranslateStats();
             updateImageStats();
         }
+
         loadDates();
         initCalendar();
-        initServiceStatuses();
+        refreshServiceStatuses();
 
-        // Auto-refresh: poll for new transcripts/history every 10s
+        // Auto-refresh: poll statuses + active tab data every 10s
+        // Skip content refresh when audio is playing to avoid destroying DOM nodes
+        // referenced by timeupdate/ended closures
         setInterval(() => {
+            // Always poll service statuses (dots) until all models are ready
+            if (!_allModelsReady) refreshServiceStatuses();
+
+            if (currentAudio && !currentAudio.paused) return;
             const activeTab = document.querySelector('.service-row.active')?.id?.replace('svc-row-', '');
             if (activeTab === 'asr') {
                 loadDates();
@@ -2048,7 +2084,7 @@
                 loadImageHistory();
                 updateImageStats();
             }
-        }, 10000);
+        }, 3000);
     </script>
 </body>
 </html>
