@@ -1,762 +1,314 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MLX Serving</title>
+    <title>MLS - MLX Serving</title>
+    <meta name="description" content="Local ML inference dashboard: ASR, TTS, Translation, Image Generation, Vision - powered by MLX on Apple Silicon.">
+    <meta property="og:title" content="MLS - MLX Serving">
+    <meta property="og:description" content="Local ML inference dashboard: ASR, TTS, Translation, Image Generation, Vision - powered by MLX on Apple Silicon.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://github.com/hanxiao/mls">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="MLS - MLX Serving">
+    <meta name="twitter:description" content="Local ML inference dashboard powered by MLX on Apple Silicon.">
+    <meta name="theme-color" content="#e25f4a">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Crect x='2' y='3' width='2' height='2' fill='%23e25f4a'/%3E%3Crect x='10' y='3' width='2' height='2' fill='%23e25f4a'/%3E%3Crect x='3' y='5' width='8' height='6' fill='%23e25f4a'/%3E%3Crect x='2' y='6' width='10' height='4' fill='%23e25f4a'/%3E%3Crect x='4' y='7' width='1' height='1' fill='%23fff'/%3E%3Crect x='9' y='7' width='1' height='1' fill='%23fff'/%3E%3Crect x='6' y='8' width='2' height='1' fill='rgba(255,255,255,0.4)'/%3E%3C/svg%3E">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
+        /* ========== Design Principles ==========
+         * Icons: all outline style, stroke="currentColor" fill="none".
+         *   Main (24x24 viewBox): stroke-width 2, round caps/joins.
+         *   Sidebar micro (10x10 viewBox): stroke-width 1.5.
+         * Button groups:
+         *   .toggle-btn  - Selection/toggle (sort, speed, theme, ctrl).
+         *                  surface bg, border, text-2. Hover: accent border+text. Active: accent fill, white text.
+         *   .action-btn  - Primary CTA (synthesize, translate, generate, analyze).
+         *                  accent bg, white text. Hover: accent-hover. Disabled: text-3 bg.
+         *   .ghost-btn   - Secondary (play, download, swap).
+         *                  transparent bg, border, text-2. Hover: accent border+text.
+         *   .icon-btn    - Sidebar micro (pause, restart). Transparent, minimal hover.
+         * Shared: border-radius 3px, transition all 0.15s, JetBrains Mono.
+         * Colors: accent #e25f4a, status green #22c55e, warning #eab308, error #ef4444.
+         */
+
+        /* ========== Theme variables ========== */
+        :root {
+            --sb-bg: #f3f4f6; --sb-text: #1a1f36; --sb-text-2: #6b7280; --sb-text-3: #9ca3af;
+            --sb-text-4: #c0c4cc; --sb-border: rgba(0,0,0,0.07); --sb-hover: rgba(0,0,0,0.03);
+            --sb-active-bg: rgba(226,95,74,0.07); --sb-input-bg: #fff; --sb-input-border: rgba(0,0,0,0.12);
+            --sb-select-opt-bg: #fff; --sb-bar-track: rgba(0,0,0,0.06); --sb-bar-idle: #c0c4cc;
+            --bg: #fafafa; --surface: #fff; --surface-alt: #f5f6f8; --text: #1a1f36; --text-2: #6b7280;
+            --text-3: #9ca3af; --border: #e0e2e8; --border-light: #ecedf0;
+            --accent: #e25f4a; --accent-hover: #d04a35; --accent-bg: #fef2f0;
+            --badge-blue: #e8f4fd; --badge-green: #f0fdf4; --badge-purple: #f0e6ff; --badge-gray: #f3f4f6;
+            --waveform-bg: #f0f1f4;
+        }
+        [data-theme="dark"] {
+            --sb-bg: #13152a; --sb-text: #c8cde0; --sb-text-2: #6b7290; --sb-text-3: #454a68;
+            --sb-text-4: #2e3250; --sb-border: rgba(255,255,255,0.06); --sb-hover: rgba(255,255,255,0.03);
+            --sb-active-bg: rgba(226,95,74,0.1); --sb-input-bg: rgba(255,255,255,0.04); --sb-input-border: rgba(255,255,255,0.1);
+            --sb-select-opt-bg: #13152a; --sb-bar-track: rgba(255,255,255,0.06); --sb-bar-idle: #3a4060;
+            --bg: #0e1020; --surface: #181a2e; --surface-alt: #1e2038; --text: #d0d4e4; --text-2: #7a80a0;
+            --text-3: #4a5070; --border: #282c44; --border-light: #222640;
+            --accent: #e25f4a; --accent-hover: #f06a55; --accent-bg: rgba(226,95,74,0.15);
+            --badge-blue: rgba(100,160,220,0.15); --badge-green: rgba(80,200,120,0.12); --badge-purple: rgba(160,120,240,0.12); --badge-gray: rgba(255,255,255,0.06);
+            --waveform-bg: #1a1d30;
+        }
+
+        /* ========== Base ========== */
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: 'JetBrains Mono', monospace;
-            background: #fafafa;
-            color: #1a1f36;
-            font-size: 14px;
-        }
+        body { font-family: 'JetBrains Mono', monospace; background: var(--bg); color: var(--text); font-size: 14px; transition: background 0.2s, color 0.2s; }
         .container { display: flex; height: 100vh; }
-        .sidebar {
-            width: 220px;
-            background: #1a1f36;
-            color: #fff;
-            display: flex;
-            flex-direction: column;
-            flex-shrink: 0;
-        }
-        .logo {
-            padding: 20px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            border-bottom: 1px dashed #3a4060;
-        }
-        .logo svg { width: 28px; height: 28px; }
-        .logo-text { font-weight: 600; font-size: 15px; }
 
-        /* Service accordion rows */
-        .service-rows {
-            border-bottom: 1px dashed #3a4060;
-        }
-        .service-row {
-            border-bottom: 1px dashed #3a4060;
-            cursor: pointer;
-            transition: background 0.15s;
-        }
+        /* ========== Sidebar ========== */
+        .sidebar { width: 200px; background: var(--sb-bg); display: flex; flex-direction: column; flex-shrink: 0; border-right: 1px solid var(--sb-border); transition: background 0.2s; }
+        .logo { padding: 14px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--sb-border); }
+        .logo svg { width: 22px; height: 22px; }
+        .logo-text { font-weight: 600; font-size: 13px; color: var(--sb-text); }
+        .service-rows { border-bottom: 1px solid var(--sb-border); }
+        .service-row { border-bottom: 1px solid var(--sb-border); cursor: pointer; transition: background 0.15s; }
         .service-row:last-child { border-bottom: none; }
-        .service-row:hover { background: rgba(255,255,255,0.03); }
-        .service-row.active {
-            background: rgba(226, 95, 74, 0.1);
-            border-left: 3px dashed #e25f4a;
-        }
-        .svc-header-actions { margin-left: auto; display: none; gap: 4px; }
+        .service-row:hover { background: var(--sb-hover); }
+        .service-row.active { background: var(--sb-active-bg); border-left: 2px solid var(--accent); }
+        .svc-header-actions { margin-left: auto; display: none; gap: 2px; }
         .service-row.expanded .svc-header-actions { display: flex; }
-        .icon-btn { background: none; border: 1px solid transparent; color: #6b7280; font-size: 10px; width: 22px; height: 22px; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; line-height: 1; }
-        .icon-btn:hover { color: #fff; border-color: rgba(255,255,255,0.25); }
-        .service-row-header {
-            padding: 10px 16px 8px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .service-row.active .service-row-header { padding-left: 13px; }
-        .service-row-name {
-            font-weight: 600;
-            font-size: 12px;
-            color: #a0a8c0;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            flex: 1;
-        }
-        .service-row.active .service-row-name { color: #fff; }
-        .service-row-arrow {
-            font-size: 10px;
-            color: #4a5070;
-            transition: transform 0.2s;
-        }
-        .service-row.expanded .service-row-arrow { transform: rotate(180deg); }
-        .service-row-model {
-            padding: 0 16px 10px;
-            font-size: 10px;
-            color: #4a5070;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .service-row.active .service-row-model { padding-left: 13px; }
-        .service-row-details {
-            display: none;
-            padding: 0 16px 12px;
-        }
-        .service-row.active .service-row-details { padding-left: 13px; }
+        .icon-btn { background: none; border: 1px solid transparent; color: var(--sb-text-3); font-size: 10px; width: 18px; height: 18px; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; line-height: 1; transition: all 0.15s; }
+        .icon-btn:hover { color: var(--sb-text-2); border-color: var(--sb-input-border); }
+        .icon-btn:active { color: var(--accent); border-color: var(--accent); }
+        .icon-btn svg { width: 10px; height: 10px; }
+        .service-row-header { padding: 7px 12px 4px; display: flex; align-items: center; gap: 6px; }
+        .service-row.active .service-row-header { padding-left: 10px; }
+        .service-row-name { font-weight: 500; font-size: 11px; color: var(--sb-text-2); text-transform: uppercase; letter-spacing: 0.3px; flex: 1; }
+        .service-row.active .service-row-name { color: var(--sb-text); }
+        .service-row-model { padding: 0 12px 6px; font-size: 9px; color: var(--sb-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .service-row.active .service-row-model { padding-left: 10px; color: var(--sb-text-2); }
+        .service-row-details { display: none; padding: 0 12px 8px; }
+        .service-row.active .service-row-details { padding-left: 10px; }
         .service-row.expanded .service-row-details { display: block; }
-        .service-row-details .model-name-full {
-            color: #a0a8c0;
-            font-size: 10px;
-            margin-bottom: 8px;
-            word-break: break-all;
-            line-height: 1.4;
-        }
-        .service-row-details .model-select {
-            width: 100%;
-            margin-bottom: 8px;
-            padding: 5px 6px;
-            background: rgba(255,255,255,0.05);
-            border: 1px dashed #3a4060;
-            color: #a0a8c0;
-            font-size: 10px;
-            font-family: 'JetBrains Mono', monospace;
-            cursor: pointer;
-        }
-        .service-row-details .model-select:focus {
-            outline: none;
-            border-color: #e25f4a;
-        }
-        .service-row-details .model-select option {
-            background: #1a1f36;
-            color: #fff;
-        }
-        .service-row-details .model-controls {
-            display: flex;
-            gap: 6px;
-            margin-bottom: 8px;
-        }
-        .service-row-details .svc-stats {
-            font-size: 10px;
-            color: #4a5070;
-        }
-        .service-row-details .svc-stats span { color: #e25f4a; }
-
+        .service-row-details .model-name-full { color: var(--sb-text-2); font-size: 9px; margin-bottom: 6px; word-break: break-all; line-height: 1.4; }
+        .service-row-details .model-select { width: 100%; margin-bottom: 6px; padding: 4px 5px; background: var(--sb-input-bg); border: 1px solid var(--sb-input-border); border-radius: 2px; color: var(--sb-text-2); font-size: 9px; font-family: 'JetBrains Mono', monospace; cursor: pointer; }
+        .service-row-details .model-select:focus { outline: none; border-color: var(--accent); }
+        .service-row-details .model-select option { background: var(--sb-select-opt-bg); color: var(--sb-text); }
+        .service-row-details .model-controls { display: flex; gap: 4px; margin-bottom: 6px; }
+        .service-row-details .svc-stats { font-size: 9px; color: var(--sb-text-3); line-height: 1.6; }
+        .service-row-details .svc-stats span { color: var(--accent); font-size: 9px; }
         .sidebar-content { margin-top: auto; }
-        
-        /* Mini Calendar */
-        .mini-calendar { padding: 8px 12px 12px; border-top: 1px dashed rgba(255,255,255,0.08); }
-        .cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-        .cal-nav button { background: none; border: none; color: #6b7280; font: 11px 'JetBrains Mono', monospace; cursor: pointer; padding: 2px 6px; }
-        .cal-nav button:hover { color: #fff; }
-        .cal-nav .cal-month { color: #9ca3af; font: 11px 'JetBrains Mono', monospace; }
-        .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; text-align: center; }
-        .cal-header { color: #4b5563; font: 9px 'JetBrains Mono', monospace; padding: 2px 0; }
-        .cal-day { font: 11px 'JetBrains Mono', monospace; padding: 3px 0; border-radius: 3px; color: #3a3f56; cursor: default; user-select: none; }
-        .cal-day.has-data { color: #9ca3af; cursor: pointer; }
-        .cal-day.has-data:hover { background: rgba(255,255,255,0.05); color: #fff; }
-        .cal-day.active { background: #e25f4a; color: #fff !important; }
-        .cal-day.today:not(.active) { border-bottom: 1px solid #e25f4a; }
 
-        /* Sidebar sub-content (dates etc) - only one visible at a time */
+        /* Calendar */
+        .mini-calendar { padding: 6px 10px 10px; border-top: 1px solid var(--sb-border); }
+        .cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+        .cal-nav button { background: none; border: none; color: var(--sb-text-3); font: 10px 'JetBrains Mono', monospace; cursor: pointer; padding: 2px 4px; }
+        .cal-nav button:hover { color: var(--sb-text); }
+        .cal-nav .cal-month { color: var(--sb-text-2); font: 10px 'JetBrains Mono', monospace; }
+        .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0; text-align: center; }
+        .cal-header { color: var(--sb-text-3); font: 8px 'JetBrains Mono', monospace; padding: 2px 0; }
+        .cal-day { font: 10px 'JetBrains Mono', monospace; padding: 2px 0; border-radius: 2px; color: var(--sb-text-4); cursor: default; user-select: none; }
+        .cal-day.has-data { color: var(--sb-text-2); cursor: pointer; }
+        .cal-day.has-data:hover { background: var(--sb-hover); color: var(--sb-text); }
+        .cal-day.active { background: var(--accent); color: #fff !important; }
+        .cal-day.today:not(.active) { border-bottom: 1px solid var(--accent); }
+
+        /* GPU stats */
+        .gpu-stats { padding: 8px 10px; border-top: 1px solid var(--sb-border); }
+        .gpu-stats-title { font-size: 9px; font-weight: 500; color: var(--sb-text-3); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px; }
+        .gpu-bar-row { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+        .gpu-bar-label { width: 28px; flex-shrink: 0; color: var(--sb-text-3); font-size: 8px; text-transform: uppercase; letter-spacing: 0.3px; }
+        .gpu-bar-track { flex: 1; height: 3px; background: var(--sb-bar-track); border-radius: 2px; overflow: hidden; }
+        .gpu-bar-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; background: var(--sb-bar-idle); }
+        .gpu-bar-fill.hot { background: #e25f4a; }
+        .gpu-bar-fill.warm { background: #eab308; }
+        .gpu-bar-fill.cool { background: #22c55e; }
+        .gpu-bar-value { width: 28px; text-align: right; flex-shrink: 0; color: var(--sb-text-3); font-size: 8px; }
+
+        /* Log chart */
+        .log-chart-wrap { padding: 6px 10px; border-top: 1px solid var(--sb-border); cursor: pointer; }
+        .log-chart-wrap:hover { background: var(--sb-hover); }
+        .log-chart-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+        .log-chart-title { font-size: 9px; font-weight: 500; color: var(--sb-text-3); text-transform: uppercase; letter-spacing: 0.3px; }
+        .log-chart-count { font-size: 8px; color: var(--sb-text-3); }
+        .log-chart { display: flex; align-items: flex-end; gap: 1px; height: 18px; }
+        .log-chart-bar { flex: 1; min-width: 1px; background: var(--accent); opacity: 0.5; border-radius: 1px 1px 0 0; transition: height 0.3s ease; }
+        .log-chart-bar.has-data { opacity: 0.8; }
+        /* Log viewer modal */
+        .log-modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; }
+        .log-modal-overlay.visible { display: flex; align-items: center; justify-content: center; }
+        .log-modal { width: 80vw; max-width: 900px; height: 70vh; background: var(--main-bg); border: 1px solid var(--sb-border); border-radius: 6px; display: flex; flex-direction: column; }
+        .log-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--sb-border); }
+        .log-modal-header h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-1); }
+        .log-modal-close { background: none; border: none; color: var(--text-3); cursor: pointer; font-size: 16px; padding: 2px 6px; border-radius: 3px; }
+        .log-modal-close:hover { background: var(--accent-bg); color: var(--accent); }
+        .log-modal-body { flex: 1; overflow-y: auto; padding: 8px 14px; font-size: 11px; line-height: 1.5; color: var(--text-2); white-space: pre-wrap; word-break: break-all; font-family: 'JetBrains Mono', monospace; }
+        .log-line-info { color: var(--accent); }
+        .log-line-error { color: #ef4444; }
+        .log-line-warning { color: #eab308; }
+
+        /* Theme toggle */
+        .theme-toggle { padding: 6px 10px 8px; border-top: 1px solid var(--sb-border); display: flex; align-items: center; gap: 4px; }
+        .theme-btn { flex: 1; background: none; border: 1px solid var(--sb-border); border-radius: 3px; color: var(--sb-text-3); font: 8px 'JetBrains Mono', monospace; padding: 3px 0; cursor: pointer; text-align: center; transition: all 0.15s; }
+        .theme-btn:hover { color: var(--sb-text-2); border-color: var(--sb-input-border); }
+        .theme-btn:active { background: var(--accent-bg); }
+        .theme-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+        /* Sidebar misc */
         .sidebar-sub { display: none; }
+        .dates-container { flex: 1; overflow-y: auto; padding: 6px 0; }
+        .date-item { padding: 6px 14px; cursor: pointer; color: var(--sb-text-2); font-size: 11px; transition: all 0.15s; }
+        .date-item:hover { color: var(--sb-text); background: var(--sb-hover); }
+        .date-item.active { color: #fff; background: var(--accent); }
 
-        .dates-container { flex: 1; overflow-y: auto; padding: 10px 0; }
-        .date-item {
-            padding: 10px 20px;
-            cursor: pointer;
-            color: #a0a8c0;
-            transition: all 0.15s;
-        }
-        .date-item:hover { color: #fff; background: rgba(255,255,255,0.05); }
-        .date-item.active {
-            color: #fff;
-            background: #e25f4a;
-        }
+        /* Status dots */
+        .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; flex-shrink: 0; }
+        .status-dot.paused { background: #eab308; animation: none; }
+        .status-dot.loading { background: #eab308; animation: pulse 0.8s infinite; }
+        .status-dot.error { background: #ef4444; animation: none; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+        .ctrl-btn { background: var(--sb-input-bg); border: 1px solid var(--sb-input-border); border-radius: 3px; color: var(--sb-text-2); padding: 3px 6px; font-size: 9px; font-family: 'JetBrains Mono', monospace; cursor: pointer; transition: all 0.15s; }
+        .ctrl-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .ctrl-btn:active { background: var(--accent-bg); }
+        .ctrl-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+        /* ========== Main content ========== */
         .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-
-        /* Main panel tabs */
         .main-content { flex: 1; overflow-y: auto; padding: 30px 40px; }
+        .header { margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+        .header-controls { display: flex; align-items: center; gap: 12px; }
+        .header h2 { font-size: 13px; font-weight: 500; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.5px; }
 
-        .header {
-            margin-bottom: 24px;
-            padding-bottom: 16px;
-            border-bottom: 1px dashed #d0d5dd;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .header-controls {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        .header h2 {
-            font-size: 13px;
-            font-weight: 500;
-            color: #6b7280;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .sort-controls {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-        .sort-label {
-            font-size: 11px;
-            color: #9ca3af;
-        }
-        .sort-btn {
-            background: #fff;
-            border: 1px dashed #d0d5dd;
-            color: #6b7280;
-            padding: 4px 10px;
-            font-size: 11px;
-            font-family: 'JetBrains Mono', monospace;
-            cursor: pointer;
-            transition: all 0.15s;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        .sort-btn:hover {
-            border-color: #e25f4a;
-            color: #e25f4a;
-        }
-        .sort-btn.active {
-            background: #e25f4a;
-            border-color: #e25f4a;
-            color: #fff;
-        }
-        .sort-btn svg {
-            width: 10px;
-            height: 10px;
-        }
-        .speed-controls {
-            display: flex;
-            gap: 4px;
-            align-items: center;
-            margin-left: 8px;
-        }
-        .speed-label {
-            font-size: 11px;
-            color: #9ca3af;
-            margin-right: 4px;
-        }
-        .speed-btn {
-            background: #fff;
-            border: 1px dashed #d0d5dd;
-            color: #6b7280;
-            padding: 4px 8px;
-            font-size: 11px;
-            font-family: 'JetBrains Mono', monospace;
-            cursor: pointer;
-            transition: all 0.15s;
-            min-width: 28px;
-            text-align: center;
-        }
-        .speed-btn:hover {
-            border-color: #e25f4a;
-            color: #e25f4a;
-        }
-        .speed-btn.active {
-            background: #e25f4a;
-            border-color: #e25f4a;
-            color: #fff;
-        }
-        .transcript {
-            background: #fff;
-            border: 1px dashed #d0d5dd;
-            padding: 16px 20px;
-            margin-bottom: 12px;
-            transition: border-color 0.15s;
-        }
-        .transcript:hover { border-color: #e25f4a; }
-        .transcript-header {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 10px;
-        }
-        .transcript-time {
-            color: #6b7280;
-            font-size: 12px;
-        }
-        .transcript-latency {
-            color: #e25f4a;
-            font-size: 11px;
-            padding: 2px 6px;
-            background: #fef2f0;
-            border-radius: 3px;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        .transcript-latency svg {
-            width: 12px;
-            height: 12px;
-        }
-        .transcript-model {
-            color: #6b7280;
-            font-size: 10px;
-            padding: 2px 6px;
-            background: #f3f4f6;
-            border-radius: 3px;
-            margin-left: auto;
-        }
-        .transcript-text {
-            font-size: 15px;
-            line-height: 1.6;
-            color: #1a1f36;
-        }
-        .transcript-footer {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-top: 12px;
-            padding-top: 12px;
-            border-top: 1px dashed #e5e7eb;
-        }
-        .transcript-file {
-            color: #9ca3af;
-            font-size: 11px;
-            flex: 1;
-        }
-        .play-btn {
-            background: #1a1f36;
-            color: white;
-            border: none;
-            padding: 6px 14px;
-            cursor: pointer;
-            font-size: 12px;
-            font-family: 'JetBrains Mono', monospace;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            transition: background 0.15s;
-        }
-        .play-btn:hover { background: #e25f4a; }
+        .sort-controls { display: flex; gap: 6px; align-items: center; }
+        .sort-label { font-size: 11px; color: var(--text-3); }
+        .sort-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text-2); padding: 4px 10px; font-size: 11px; font-family: 'JetBrains Mono', monospace; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 4px; border-radius: 3px; }
+        .sort-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .sort-btn:active { background: var(--accent-bg); }
+        .sort-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+        .sort-btn svg { width: 10px; height: 10px; transition: transform 0.2s ease; }
+
+        .speed-controls { display: flex; gap: 4px; align-items: center; margin-left: 8px; }
+        .speed-label { font-size: 11px; color: var(--text-3); margin-right: 4px; }
+        .speed-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text-2); padding: 4px 8px; font-size: 11px; font-family: 'JetBrains Mono', monospace; cursor: pointer; transition: all 0.15s; min-width: 28px; text-align: center; border-radius: 3px; }
+        .speed-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .speed-btn:active { background: var(--accent-bg); }
+        .speed-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+        /* Cards */
+        .transcript { background: var(--surface); border: 1px solid var(--border); padding: 16px 20px; margin-bottom: 12px; transition: border-color 0.15s; border-radius: 3px; }
+        .transcript:hover { border-color: var(--accent); }
+        .transcript-header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+        .transcript-time { color: var(--text-2); font-size: 12px; }
+        .transcript-latency { color: var(--accent); font-size: 11px; padding: 2px 6px; background: var(--accent-bg); border-radius: 3px; display: flex; align-items: center; gap: 4px; }
+        .transcript-latency svg { width: 12px; height: 12px; }
+        .transcript-model { color: var(--text-2); font-size: 10px; padding: 2px 6px; background: var(--badge-gray); border-radius: 3px; margin-left: auto; }
+        .transcript-text { font-size: 15px; line-height: 1.6; color: var(--text); }
+        .transcript-footer { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-light); }
+        .transcript-file { color: var(--text-3); font-size: 11px; flex: 1; }
+        .play-btn { background: transparent; color: var(--text-2); border: 1px solid var(--border); padding: 6px 14px; cursor: pointer; font-size: 12px; font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 6px; transition: all 0.15s; border-radius: 3px; text-decoration: none; }
+        .play-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .play-btn:active { background: var(--accent-bg); }
         .play-btn svg { width: 12px; height: 12px; }
-        .waveform-container {
-            position: relative;
-            height: 48px;
-            margin-top: 12px;
-            background: #f8f9fa;
-            border-radius: 4px;
-            cursor: pointer;
-            overflow: hidden;
-        }
-        .waveform-container canvas {
-            display: block;
-            width: 100%;
-            height: 100%;
-        }
-        .waveform-progress {
-            position: absolute;
-            top: 0;
-            left: 0;
-            height: 100%;
-            background: rgba(226, 95, 74, 0.15);
-            pointer-events: none;
-            transition: width 0.1s linear;
-        }
-        .waveform-time {
-            position: absolute;
-            bottom: 4px;
-            right: 8px;
-            font-size: 10px;
-            color: #6b7280;
-            pointer-events: none;
-        }
-        .waveform-loading {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            font-size: 11px;
-            color: #9ca3af;
-        }
-        audio {
-            display: none;
-        }
-        .empty {
-            color: #9ca3af;
-            text-align: center;
-            padding: 60px 40px;
-            border: 1px dashed #d0d5dd;
-            background: #fff;
-        }
-        /* (old .stats removed - now inline in service row details) */
 
-        /* Status dot used in service rows */
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #4ade80;
-            flex-shrink: 0;
-            animation: pulse 2s infinite;
-        }
-        .status-dot.paused {
-            background: #fbbf24;
-            animation: none;
-        }
-        .status-dot.loading {
-            background: #fbbf24;
-            animation: pulse 0.8s infinite;
-        }
-        .status-dot.error {
-            background: #ef4444;
-            animation: none;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .ctrl-btn {
-            background: rgba(255,255,255,0.1);
-            border: 1px dashed #3a4060;
-            color: #a0a8c0;
-            padding: 4px 8px;
-            font-size: 10px;
-            font-family: 'JetBrains Mono', monospace;
-            cursor: pointer;
-            transition: all 0.15s;
-        }
-        .ctrl-btn:hover {
-            background: #e25f4a;
-            border-color: #e25f4a;
-            color: #fff;
-        }
-        .ctrl-btn.active {
-            background: #e25f4a;
-            border-color: #e25f4a;
-            color: #fff;
-        }
+        .waveform-container { position: relative; height: 48px; margin-top: 12px; background: var(--waveform-bg); border-radius: 4px; cursor: pointer; overflow: hidden; }
+        .waveform-container canvas { display: block; width: 100%; height: 100%; }
+        .waveform-progress { position: absolute; top: 0; left: 0; height: 100%; background: rgba(226,95,74,0.15); pointer-events: none; transition: width 0.1s linear; }
+        .waveform-time { position: absolute; bottom: 4px; right: 8px; font-size: 10px; color: var(--text-2); pointer-events: none; }
+        .waveform-loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 11px; color: var(--text-3); }
+        audio { display: none; }
+        .empty { color: var(--text-3); text-align: center; padding: 60px 40px; border: 1px solid var(--border); background: var(--surface); border-radius: 3px; }
 
-        /* TTS panel styles */
-        .tts-panel { display: none; }
-        .tts-panel.active { display: block; }
-        .asr-panel { display: block; }
-        .translate-panel { display: none; }
-        .image-panel { display: none; }
+        /* Panels */
+        .tts-panel { display: none; } .tts-panel.active { display: block; }
+        .asr-panel { display: block; } .translate-panel { display: none; }
+        .image-panel { display: none; } .vision-panel { display: none; }
 
-        .tts-compose {
-            background: #fff;
-            border: 1px dashed #d0d5dd;
-            padding: 20px;
-            margin-bottom: 24px;
-        }
-        .tts-compose-header {
-            font-size: 13px;
-            font-weight: 500;
-            color: #6b7280;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 16px;
-        }
-        .tts-textarea {
-            width: 100%;
-            min-height: 100px;
-            padding: 12px;
-            border: 1px dashed #d0d5dd;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 14px;
-            line-height: 1.6;
-            resize: vertical;
-            color: #1a1f36;
-            background: #fafafa;
-        }
-        .tts-textarea:focus {
-            outline: none;
-            border-color: #e25f4a;
-        }
-        .tts-controls {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-top: 12px;
-        }
-        .tts-select {
-            padding: 8px 12px;
-            border: 1px dashed #d0d5dd;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
-            color: #1a1f36;
-            background: #fff;
-            cursor: pointer;
-        }
-        .tts-select:focus {
-            outline: none;
-            border-color: #e25f4a;
-        }
-        .synthesize-btn {
-            background: #e25f4a;
-            color: #fff;
-            border: none;
-            padding: 8px 20px;
-            font-size: 12px;
-            font-family: 'JetBrains Mono', monospace;
-            cursor: pointer;
-            transition: background 0.15s;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .synthesize-btn:hover { background: #d04a35; }
-        .synthesize-btn:disabled {
-            background: #9ca3af;
-            cursor: not-allowed;
-        }
+        /* Compose panel (right column) */
+        .compose-panel { width: 350px; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; transition: background 0.2s; }
+        .compose-panel.collapsed { width: 0; min-width: 0; border: none; }
+        .compose-panel-header { padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+        .compose-panel-title { font-size: 11px; font-weight: 500; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.5px; }
+        .compose-panel-body { flex: 1; overflow-y: auto; padding: 16px; }
+        .compose-content { display: none; }
+        .compose-content.active { display: block; }
+        .compose-open-strip { width: 20px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: var(--surface); border-left: 1px solid var(--border); cursor: pointer; color: var(--text-3); transition: all 0.15s; }
+        .compose-open-strip:hover { color: var(--accent); background: var(--accent-bg); }
+        .resize-handle { width: 4px; cursor: col-resize; background: transparent; flex-shrink: 0; transition: background 0.15s; }
+        .resize-handle:hover { background: var(--border); }
+        .resize-handle.active { background: var(--accent); }
+
+        /* Compose areas (inside compose panel) */
+        .tts-compose, .translate-compose, .image-compose, .vision-compose { margin-bottom: 0; }
+        .file-translate-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border); }
+        .tts-compose-header, .translate-compose-header { font-size: 11px; font-weight: 500; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+        .tts-textarea, .translate-textarea { width: 100%; min-height: 80px; padding: 10px; border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.6; resize: vertical; color: var(--text); background: var(--surface-alt); border-radius: 2px; }
+        .tts-textarea:focus, .translate-textarea:focus { outline: none; border-color: var(--accent); }
+        .translate-textarea[readonly] { background: var(--surface-alt); color: var(--text-2); }
+        .tts-controls, .translate-controls { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+        .tts-select, .translate-select { padding: 8px 12px; border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text); background: var(--surface); cursor: pointer; border-radius: 2px; }
+        .tts-select:focus, .translate-select:focus { outline: none; border-color: var(--accent); }
+        .translate-select { max-width: 180px; }
+        .synthesize-btn { background: var(--accent); color: #fff; border: none; padding: 8px 20px; font-size: 12px; font-family: 'JetBrains Mono', monospace; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 6px; border-radius: 3px; }
+        .synthesize-btn:hover { background: var(--accent-hover); }
+        .synthesize-btn:active { filter: brightness(0.9); }
+        .synthesize-btn:disabled { background: var(--text-3); cursor: not-allowed; filter: none; }
         .synthesize-btn svg { width: 14px; height: 14px; }
+        .tts-speed-input { width: 60px; padding: 8px; border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: center; color: var(--text); background: var(--surface); border-radius: 2px; }
+        .tts-speed-input:focus { outline: none; border-color: var(--accent); }
+        .swap-btn { background: transparent; border: 1px solid var(--border); color: var(--text-2); padding: 8px 12px; font-size: 14px; cursor: pointer; transition: all 0.15s; border-radius: 3px; }
+        .swap-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .swap-btn:active { background: var(--accent-bg); }
+        .translate-output-label { font-size: 11px; color: var(--text-3); margin-top: 16px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .file-translate-controls { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+        .file-input { flex: 1; padding: 8px 12px; border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text); background: var(--surface-alt); border-radius: 2px; }
+        .file-input:focus { outline: none; border-color: var(--accent); }
+        .file-progress { margin-top: 12px; font-size: 11px; color: var(--text-2); }
+        .file-progress-bar { height: 4px; background: var(--border-light); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+        .file-progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
 
-        .tts-speed-input {
-            width: 60px;
-            padding: 8px;
-            border: 1px dashed #d0d5dd;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
-            text-align: center;
-            color: #1a1f36;
-        }
-        .tts-speed-input:focus {
-            outline: none;
-            border-color: #e25f4a;
-        }
+        /* History items */
+        .tts-item, .translate-item, .image-item, .vision-item { background: var(--surface); border: 1px solid var(--border); padding: 16px 20px; margin-bottom: 12px; transition: border-color 0.15s; border-radius: 3px; }
+        .tts-item:hover, .translate-item:hover, .image-item:hover, .vision-item:hover { border-color: var(--accent); }
+        .image-item, .vision-item { padding: 16px; display: flex; gap: 16px; align-items: flex-start; }
+        .tts-voice-badge { color: var(--text-2); font-size: 10px; padding: 2px 6px; background: var(--badge-blue); border-radius: 3px; }
+        .tts-lang-badge { color: var(--text-2); font-size: 10px; padding: 2px 6px; background: var(--badge-green); border-radius: 3px; }
+        .translate-lang-badge { color: var(--text-2); font-size: 10px; padding: 2px 6px; background: var(--badge-purple); border-radius: 3px; }
+        .translate-arrow { color: var(--text-3); font-size: 11px; }
+        .translate-source-text { font-size: 13px; line-height: 1.5; color: var(--text-2); margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border-light); }
+        .translate-result-text { font-size: 15px; line-height: 1.6; color: var(--text); }
 
-        /* TTS history item (reuses transcript styles) */
-        .tts-item {
-            background: #fff;
-            border: 1px dashed #d0d5dd;
-            padding: 16px 20px;
-            margin-bottom: 12px;
-            transition: border-color 0.15s;
-        }
-        .tts-item:hover { border-color: #e25f4a; }
+        /* Image panel */
+        .image-result { margin-top: 20px; text-align: center; border-top: 1px solid var(--border-light); padding-top: 20px; }
+        .image-result img { max-width: 100%; max-height: 500px; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .image-item-thumb, .vision-item-thumb { width: 100px; height: 100px; object-fit: cover; border-radius: 4px; background: var(--surface-alt); cursor: pointer; }
+        .vision-item-thumb { flex-shrink: 0; }
+        .image-item-details, .vision-item-details { flex: 1; }
+        .image-item-prompt { font-size: 13px; line-height: 1.5; color: var(--text); margin-bottom: 8px; }
+        .image-item-meta { font-size: 11px; color: var(--text-2); display: flex; gap: 12px; align-items: center; }
 
-        .tts-voice-badge {
-            color: #6b7280;
-            font-size: 10px;
-            padding: 2px 6px;
-            background: #e8f4fd;
-            border-radius: 3px;
-        }
-        .tts-lang-badge {
-            color: #6b7280;
-            font-size: 10px;
-            padding: 2px 6px;
-            background: #f0fdf4;
-            border-radius: 3px;
-        }
-
-        /* Translate panel styles */
-        .translate-compose {
-            background: #fff;
-            border: 1px dashed #d0d5dd;
-            padding: 20px;
-            margin-bottom: 24px;
-        }
-        .translate-compose-header {
-            font-size: 13px;
-            font-weight: 500;
-            color: #6b7280;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 16px;
-        }
-        .translate-textarea {
-            width: 100%;
-            min-height: 100px;
-            padding: 12px;
-            border: 1px dashed #d0d5dd;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 14px;
-            line-height: 1.6;
-            resize: vertical;
-            color: #1a1f36;
-            background: #fafafa;
-        }
-        .translate-textarea:focus {
-            outline: none;
-            border-color: #e25f4a;
-        }
-        .translate-textarea[readonly] {
-            background: #f3f4f6;
-            color: #374151;
-        }
-        .translate-controls {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-top: 12px;
-        }
-        .translate-select {
-            padding: 8px 12px;
-            border: 1px dashed #d0d5dd;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
-            color: #1a1f36;
-            background: #fff;
-            cursor: pointer;
-            max-width: 180px;
-        }
-        .translate-select:focus {
-            outline: none;
-            border-color: #e25f4a;
-        }
-        .swap-btn {
-            background: transparent;
-            border: 1px dashed #d0d5dd;
-            color: #6b7280;
-            padding: 8px 12px;
-            font-size: 14px;
-            cursor: pointer;
-            transition: all 0.15s;
-        }
-        .swap-btn:hover {
-            border-color: #e25f4a;
-            color: #e25f4a;
-        }
-        .translate-output-label {
-            font-size: 11px;
-            color: #9ca3af;
-            margin-top: 16px;
-            margin-bottom: 8px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .translate-item {
-            background: #fff;
-            border: 1px dashed #d0d5dd;
-            padding: 16px 20px;
-            margin-bottom: 12px;
-            transition: border-color 0.15s;
-        }
-        .translate-item:hover { border-color: #e25f4a; }
-        .translate-lang-badge {
-            color: #6b7280;
-            font-size: 10px;
-            padding: 2px 6px;
-            background: #f0e6ff;
-            border-radius: 3px;
-        }
-        .translate-arrow {
-            color: #9ca3af;
-            font-size: 11px;
-        }
-        .translate-source-text {
-            font-size: 13px;
-            line-height: 1.5;
-            color: #6b7280;
-            margin-bottom: 8px;
-            padding-bottom: 8px;
-            border-bottom: 1px dashed #e5e7eb;
-        }
-        .translate-result-text {
-            font-size: 15px;
-            line-height: 1.6;
-            color: #1a1f36;
-        }
-
-        /* File translate section */
-        .file-translate-section {
-            background: #fff;
-            border: 1px dashed #d0d5dd;
-            padding: 20px;
-            margin-bottom: 24px;
-        }
-        .file-translate-controls {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-top: 12px;
-        }
-        .file-input {
-            flex: 1;
-            padding: 8px 12px;
-            border: 1px dashed #d0d5dd;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
-            color: #1a1f36;
-            background: #fafafa;
-        }
-        .file-input:focus {
-            outline: none;
-            border-color: #e25f4a;
-        }
-        .file-progress {
-            margin-top: 12px;
-            font-size: 11px;
-            color: #6b7280;
-        }
-        .file-progress-bar {
-            height: 4px;
-            background: #e5e7eb;
-            border-radius: 2px;
-            margin-top: 6px;
-            overflow: hidden;
-        }
-        .file-progress-fill {
-            height: 100%;
-            background: #e25f4a;
-            border-radius: 2px;
-            transition: width 0.3s;
-        }
-        
-        /* Image panel styles */
-        .image-compose {
-            background: #fff;
-            border: 1px dashed #d0d5dd;
-            padding: 20px;
-            margin-bottom: 24px;
-        }
-        .image-result {
-            margin-top: 20px;
-            text-align: center;
-            border-top: 1px dashed #e5e7eb;
-            padding-top: 20px;
-        }
-        .image-result img {
-            max-width: 100%;
-            max-height: 500px;
-            border-radius: 4px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
-        .image-item {
-            background: #fff;
-            border: 1px dashed #d0d5dd;
-            padding: 16px;
-            margin-bottom: 12px;
-            display: flex;
-            gap: 16px;
-            align-items: flex-start;
-        }
-        .image-item-thumb {
-            width: 100px;
-            height: 100px;
-            object-fit: cover;
-            border-radius: 4px;
-            background: #f3f4f6;
-            cursor: pointer;
-        }
-        .image-item-details { flex: 1; }
-        .image-item-prompt {
-            font-size: 13px;
-            line-height: 1.5;
-            color: #1a1f36;
-            margin-bottom: 8px;
-        }
-        .image-item-meta {
-            font-size: 11px;
-            color: #6b7280;
-            display: flex;
-            gap: 12px;
-            align-items: center;
-        }
+        /* Vision panel */
+        .vision-upload-area { display: flex; flex-direction: column; gap: 12px; }
+        .vision-preview { width: 100%; height: 140px; border: 1px solid var(--border); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: var(--text-3); font-size: 11px; background: var(--surface-alt); overflow: hidden; flex-shrink: 0; }
+        .vision-preview img { width: 100%; height: 100%; object-fit: cover; }
+        .vision-inputs { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+        .vision-response { font-size: 13px; line-height: 1.6; color: var(--text); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-light); white-space: pre-wrap; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="sidebar">
-            <div class="logo">
+            <a class="logo" href="https://github.com/hanxiao/mls" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">
                 <svg width="28" height="28" viewBox="0 0 14 14" shape-rendering="crispEdges">
                     <rect x="2" y="3" width="2" height="2" fill="#e25f4a"/>
                     <rect x="10" y="3" width="2" height="2" fill="#e25f4a"/>
                     <rect x="3" y="5" width="8" height="6" fill="#e25f4a"/>
                     <rect x="2" y="6" width="10" height="4" fill="#e25f4a"/>
-                    <rect x="4" y="7" width="1" height="1" fill="#1a1f36"/>
-                    <rect x="9" y="7" width="1" height="1" fill="#1a1f36"/>
+                    <rect x="4" y="7" width="1" height="1" fill="var(--sb-bg)"/>
+                    <rect x="9" y="7" width="1" height="1" fill="var(--sb-bg)"/>
                     <rect x="6" y="8" width="2" height="1" fill="rgba(255,255,255,0.4)"/>
                     <rect x="3" y="5" width="1" height="1" fill="rgba(255,255,255,0.2)"/>
                 </svg>
                 <span class="logo-text" style="font-family: 'JetBrains Mono', monospace; letter-spacing: -0.5px; font-weight: 700;">MLS</span>
-            </div>
+            </a>
 
             <!-- Service accordion rows -->
             <div class="service-rows">
@@ -766,8 +318,8 @@
                         <div class="status-dot loading" id="status-dot"></div>
                         <span class="service-row-name">ASR</span>
                         <span class="svc-header-actions" onclick="event.stopPropagation()">
-                            <button class="icon-btn" id="btn-pause" onclick="togglePause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg></button>
-                            <button class="icon-btn" id="btn-restart" onclick="restartModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M5 1a4 4 0 1 0 4 4" stroke="currentColor" fill="none" stroke-width="1.5"/><path d="M7 1l2 4h-4z" fill="currentColor"/></svg></button>
+                            <button class="icon-btn" id="btn-pause" onclick="togglePause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="3" y1="2" x2="3" y2="8"/><line x1="7" y1="2" x2="7" y2="8"/></svg></button>
+                            <button class="icon-btn" id="btn-restart" onclick="restartModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 5a3.5 3.5 0 1 1-3.5-3.5"/><polyline points="3.5,0 5,1.5 3.5,3"/></svg></button>
                         </span>
                     </div>
                     <div class="service-row-model" id="svc-model-short-asr">loading...</div>
@@ -787,8 +339,8 @@
                         <div class="status-dot loading" id="tts-status-dot"></div>
                         <span class="service-row-name">TTS</span>
                         <span class="svc-header-actions" onclick="event.stopPropagation()">
-                            <button class="icon-btn" id="tts-btn-pause" onclick="toggleTTSPause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg></button>
-                            <button class="icon-btn" id="tts-btn-restart" onclick="restartTTSModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M5 1a4 4 0 1 0 4 4" stroke="currentColor" fill="none" stroke-width="1.5"/><path d="M7 1l2 4h-4z" fill="currentColor"/></svg></button>
+                            <button class="icon-btn" id="tts-btn-pause" onclick="toggleTTSPause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="3" y1="2" x2="3" y2="8"/><line x1="7" y1="2" x2="7" y2="8"/></svg></button>
+                            <button class="icon-btn" id="tts-btn-restart" onclick="restartTTSModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 5a3.5 3.5 0 1 1-3.5-3.5"/><polyline points="3.5,0 5,1.5 3.5,3"/></svg></button>
                         </span>
                     </div>
                     <div class="service-row-model" id="svc-model-short-tts">loading...</div>
@@ -808,8 +360,8 @@
                         <div class="status-dot loading" id="translate-status-dot"></div>
                         <span class="service-row-name">Translate</span>
                         <span class="svc-header-actions" onclick="event.stopPropagation()">
-                            <button class="icon-btn" id="translate-btn-pause" onclick="toggleTranslatePause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="3" height="8" fill="currentColor"/><rect x="6" y="1" width="3" height="8" fill="currentColor"/></svg></button>
-                            <button class="icon-btn" id="translate-btn-restart" onclick="restartTranslateModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M5 1a4 4 0 1 0 4 4" stroke="currentColor" fill="none" stroke-width="1.5"/><path d="M7 1l2 4h-4z" fill="currentColor"/></svg></button>
+                            <button class="icon-btn" id="translate-btn-pause" onclick="toggleTranslatePause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="3" y1="2" x2="3" y2="8"/><line x1="7" y1="2" x2="7" y2="8"/></svg></button>
+                            <button class="icon-btn" id="translate-btn-restart" onclick="restartTranslateModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 5a3.5 3.5 0 1 1-3.5-3.5"/><polyline points="3.5,0 5,1.5 3.5,3"/></svg></button>
                         </span>
                     </div>
                     <div class="service-row-model" id="svc-model-short-translate">loading...</div>
@@ -836,6 +388,25 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Vision row -->
+                <div class="service-row" id="svc-row-vision" onclick="onServiceRowClick(event, 'vision')">
+                    <div class="service-row-header">
+                        <div class="status-dot loading" id="vision-status-dot"></div>
+                        <span class="service-row-name">Vision</span>
+                        <span class="svc-header-actions" onclick="event.stopPropagation()">
+                            <button class="icon-btn" id="vision-btn-pause" onclick="toggleVisionPause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="3" y1="2" x2="3" y2="8"/><line x1="7" y1="2" x2="7" y2="8"/></svg></button>
+                            <button class="icon-btn" id="vision-btn-restart" onclick="restartVisionModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 5a3.5 3.5 0 1 1-3.5-3.5"/><polyline points="3.5,0 5,1.5 3.5,3"/></svg></button>
+                        </span>
+                    </div>
+                    <div class="service-row-model" id="svc-model-short-vision">loading...</div>
+                    <div class="service-row-details" onclick="event.stopPropagation()">
+                        <div class="svc-stats">
+                            <div>total: <span id="vision-stat-total">-</span></div>
+                            <div>today: <span id="vision-stat-today">-</span></div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="sidebar-content">
@@ -847,11 +418,60 @@
                     </div>
                     <div class="cal-grid" id="cal-grid"></div>
                 </div>
+
+                <div class="gpu-stats" id="gpu-stats">
+                    <div class="gpu-stats-title" id="gpu-device-name">GPU</div>
+                    <div class="gpu-bar-row">
+                        <span class="gpu-bar-label">load</span>
+                        <div class="gpu-bar-track"><div class="gpu-bar-fill" id="gpu-util-bar" style="width:0%"></div></div>
+                        <span class="gpu-bar-value" id="gpu-util-val">--%</span>
+                    </div>
+                    <div class="gpu-bar-row">
+                        <span class="gpu-bar-label">mem</span>
+                        <div class="gpu-bar-track"><div class="gpu-bar-fill" id="gpu-mem-bar" style="width:0%"></div></div>
+                        <span class="gpu-bar-value" id="gpu-mem-val">--</span>
+                    </div>
+                    <div class="gpu-bar-row">
+                        <span class="gpu-bar-label">disk</span>
+                        <div class="gpu-bar-track"><div class="gpu-bar-fill" id="disk-bar" style="width:0%"></div></div>
+                        <span class="gpu-bar-value" id="disk-val">--</span>
+                    </div>
+                    <div class="gpu-bar-row" id="usb-bar-row" style="display:none;">
+                        <span class="gpu-bar-label">usb</span>
+                        <div class="gpu-bar-track"><div class="gpu-bar-fill" id="usb-bar" style="width:0%"></div></div>
+                        <span class="gpu-bar-value" id="usb-val">--</span>
+                    </div>
+                </div>
+
+                <div class="log-chart-wrap" onclick="openLogViewer()" title="Server logs - last 1h">
+                    <div class="log-chart-header">
+                        <span class="log-chart-title">log</span>
+                        <span class="log-chart-count" id="log-chart-count">--</span>
+                    </div>
+                    <div class="log-chart" id="log-chart"></div>
+                </div>
+
+                <div class="theme-toggle">
+                    <button class="theme-btn" onclick="setTheme('light')" id="theme-light">light</button>
+                    <button class="theme-btn" onclick="setTheme('dark')" id="theme-dark">dark</button>
+                    <button class="theme-btn" onclick="setTheme('auto')" id="theme-auto">auto</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="log-modal-overlay" id="log-modal" onclick="if(event.target===this)closeLogViewer()">
+            <div class="log-modal">
+                <div class="log-modal-header">
+                    <h3>Server Log</h3>
+                    <button class="log-modal-close" onclick="closeLogViewer()">x</button>
+                </div>
+                <div class="log-modal-body" id="log-modal-body"></div>
             </div>
         </div>
 
         <div class="main">
-            <!-- ASR main panel -->
+
+            <!-- ASR panel -->
             <div class="main-content asr-panel" id="asr-panel">
                 <div class="header">
                     <h2>Transcripts</h2>
@@ -860,15 +480,15 @@
                             <span class="sort-label">sort:</span>
                             <button class="sort-btn active" id="sort-time" onclick="setSort('time')">
                                 time
-                                <svg id="sort-time-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5z"/></svg>
+                                <svg id="sort-time-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>
                             </button>
                             <button class="sort-btn" id="sort-length" onclick="setSort('length')">
                                 length
-                                <svg id="sort-length-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5z"/></svg>
+                                <svg id="sort-length-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>
                             </button>
                             <button class="sort-btn" id="sort-latency" onclick="setSort('latency')">
                                 latency
-                                <svg id="sort-latency-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5z"/></svg>
+                                <svg id="sort-latency-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>
                             </button>
                         </div>
                         <div class="speed-controls">
@@ -882,113 +502,200 @@
                 <div id="transcripts"><div class="empty">select a date to view transcripts</div></div>
             </div>
 
-            <!-- TTS main panel -->
+            <!-- TTS panel (history only) -->
             <div class="main-content tts-panel" id="tts-panel">
-                <div class="tts-compose">
-                    <div class="tts-compose-header">Synthesize Speech</div>
-                    <textarea class="tts-textarea" id="tts-text" placeholder="Enter text to synthesize..."></textarea>
-                    <div class="tts-controls">
-                        <select class="tts-select" id="tts-voice-select">
-                            <option value="Chelsie">Chelsie (EN/F)</option>
-                            <option value="Ethan">Ethan (EN/M)</option>
-                            <option value="Vivian">Vivian (ZH/F)</option>
-                        </select>
-                        <select class="tts-select" id="tts-lang-select">
-                            <option value="en">English</option>
-                            <option value="zh">Chinese</option>
-                            <option value="ja">Japanese</option>
-                            <option value="ko">Korean</option>
-                            <option value="fr">French</option>
-                            <option value="de">German</option>
-                            <option value="es">Spanish</option>
-                            <option value="ru">Russian</option>
-                            <option value="it">Italian</option>
-                            <option value="pt">Portuguese</option>
-                        </select>
-                        <label style="font-size:11px;color:#9ca3af;">speed:</label>
-                        <input type="number" class="tts-speed-input" id="tts-speed" value="1.0" min="0.5" max="2.0" step="0.1">
-                        <input type="text" class="tts-speed-input" id="tts-instruct" placeholder="Voice instruct (optional)" style="width:220px;font-size:11px;">
-                        <button class="synthesize-btn" id="synthesize-btn" onclick="synthesize()">
-                            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
-                            <span id="synthesize-btn-text">Synthesize</span>
-                        </button>
-                    </div>
-                </div>
-
-                <div class="header" style="margin-top: 0;">
+                <div class="header">
                     <h2>TTS History</h2>
+                    <div class="header-controls">
+                        <div class="sort-controls">
+                            <span class="sort-label">sort:</span>
+                            <button class="sort-btn active" onclick="setHistorySort('tts','time',this)">time <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                            <button class="sort-btn" onclick="setHistorySort('tts','latency',this)">latency <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                        </div>
+                    </div>
                 </div>
                 <div id="tts-history"><div class="empty">no TTS history yet</div></div>
             </div>
 
-            <!-- Translate main panel -->
+            <!-- Translate panel (history only) -->
             <div class="main-content translate-panel" id="translate-panel">
-                <div class="translate-compose">
-                    <div class="translate-compose-header">Translate Text</div>
-                    <div class="translate-controls">
-                        <select class="translate-select" id="translate-source-lang"></select>
-                        <button class="swap-btn" onclick="swapLanguages()" title="Swap languages">&#8644;</button>
-                        <select class="translate-select" id="translate-target-lang"></select>
-                        <button class="synthesize-btn" id="translate-btn" onclick="doTranslate()">
-                            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg>
-                            <span id="translate-btn-text">Translate</span>
-                        </button>
+                <div class="header">
+                    <h2>Translation History</h2>
+                    <div class="header-controls">
+                        <div class="sort-controls">
+                            <span class="sort-label">sort:</span>
+                            <button class="sort-btn active" onclick="setHistorySort('translate','time',this)">time <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                            <button class="sort-btn" onclick="setHistorySort('translate','latency',this)">latency <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                        </div>
                     </div>
-                    <textarea class="translate-textarea" id="translate-input" placeholder="Enter text to translate..."></textarea>
-                    <div class="translate-output-label">Translation</div>
-                    <textarea class="translate-textarea" id="translate-output" placeholder="Translation will appear here..." readonly></textarea>
                 </div>
+                <div id="translate-history"><div class="empty">no translation history yet</div></div>
+            </div>
 
-                <div class="file-translate-section">
-                    <div class="translate-compose-header">File Translation</div>
-                    <div class="file-translate-controls">
-                        <input type="text" class="file-input" id="translate-file-path" placeholder="File path (e.g. ~/Documents/input.txt)">
-                        <select class="translate-select" id="translate-file-source"></select>
-                        <select class="translate-select" id="translate-file-target"></select>
-                        <button class="synthesize-btn" id="translate-file-btn" onclick="startFileTranslate()">
-                            <span id="translate-file-btn-text">Start</span>
-                        </button>
+            <!-- Image panel (history only) -->
+            <div class="main-content image-panel" id="image-panel">
+                <div class="header">
+                    <h2>Generation History</h2>
+                    <div class="header-controls">
+                        <div class="sort-controls">
+                            <span class="sort-label">sort:</span>
+                            <button class="sort-btn active" onclick="setHistorySort('image','time',this)">time <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                            <button class="sort-btn" onclick="setHistorySort('image','latency',this)">latency <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                            <button class="sort-btn" onclick="setHistorySort('image','length',this)">length <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                        </div>
                     </div>
-                    <div class="file-progress" id="translate-file-progress" style="display:none;">
-                        <span id="translate-file-progress-text">0 / 0 lines</span>
-                        <div class="file-progress-bar">
-                            <div class="file-progress-fill" id="translate-file-progress-fill" style="width:0%"></div>
+                </div>
+                <div id="image-history"><div class="empty">no history yet</div></div>
+            </div>
+
+            <!-- Vision panel (history only) -->
+            <div class="main-content vision-panel" id="vision-panel">
+                <div class="header">
+                    <h2>Vision History</h2>
+                    <div class="header-controls">
+                        <div class="sort-controls">
+                            <span class="sort-label">sort:</span>
+                            <button class="sort-btn active" onclick="setHistorySort('vision','time',this)">time <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                            <button class="sort-btn" onclick="setHistorySort('vision','latency',this)">latency <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                            <button class="sort-btn" onclick="setHistorySort('vision','length',this)">length <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                        </div>
+                    </div>
+                </div>
+                <div id="vision-history"><div class="empty">no vision history yet</div></div>
+            </div>
+        </div>
+
+        <!-- Compose open strip (shown when compose panel is collapsed) -->
+        <div class="compose-open-strip" id="compose-open-strip" onclick="toggleComposePanel()" style="display:none;" title="Open compose panel">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="7" y1="2" x2="3" y2="5"/><line x1="3" y1="5" x2="7" y2="8"/></svg>
+        </div>
+
+        <!-- Resize handle -->
+        <div class="resize-handle" id="resize-handle"></div>
+
+        <!-- Compose panel (right column) -->
+        <div class="compose-panel" id="compose-panel">
+            <div class="compose-panel-header">
+                <span class="compose-panel-title" id="compose-panel-title"></span>
+                <button class="icon-btn" onclick="toggleComposePanel()" title="close">
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="2" x2="8" y2="8"/><line x1="8" y1="2" x2="2" y2="8"/></svg>
+                </button>
+            </div>
+            <div class="compose-panel-body">
+                <!-- TTS compose -->
+                <div class="compose-content" id="compose-tts">
+                    <div class="tts-compose">
+                        <textarea class="tts-textarea" id="tts-text" placeholder="Enter text to synthesize..."></textarea>
+                        <div class="tts-controls">
+                            <select class="tts-select" id="tts-voice-select">
+                                <option value="Chelsie">Chelsie (EN/F)</option>
+                                <option value="Ethan">Ethan (EN/M)</option>
+                                <option value="Vivian">Vivian (ZH/F)</option>
+                            </select>
+                            <select class="tts-select" id="tts-lang-select">
+                                <option value="en">English</option>
+                                <option value="zh">Chinese</option>
+                                <option value="ja">Japanese</option>
+                                <option value="ko">Korean</option>
+                                <option value="fr">French</option>
+                                <option value="de">German</option>
+                                <option value="es">Spanish</option>
+                                <option value="ru">Russian</option>
+                                <option value="it">Italian</option>
+                                <option value="pt">Portuguese</option>
+                            </select>
+                            <label style="font-size:11px;color:var(--text-3);">speed:</label>
+                            <input type="number" class="tts-speed-input" id="tts-speed" value="1.0" min="0.5" max="2.0" step="0.1">
+                            <input type="text" class="tts-speed-input" id="tts-instruct" placeholder="Voice instruct (optional)" style="width:100%;font-size:11px;">
+                            <button class="synthesize-btn" id="synthesize-btn" onclick="synthesize()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>
+                                <span id="synthesize-btn-text">Synthesize</span>
+                            </button>
                         </div>
                     </div>
                 </div>
 
-                <div class="header" style="margin-top: 0;">
-                    <h2>Translation History</h2>
-                </div>
-                <div id="translate-history"><div class="empty">no translation history yet</div></div>
-            </div>
-            
-            <!-- Image main panel -->
-            <div class="main-content image-panel" id="image-panel">
-                <div class="image-compose">
-                    <div class="translate-compose-header">Generate Image</div>
-                    <textarea class="tts-textarea" id="image-prompt" placeholder="Enter prompt description..."></textarea>
-                    <div class="tts-controls">
-                        <select class="translate-select" id="image-resolution">
-                            <option value="1024x1024" selected>1024x1024</option>
-                            <option value="768x1024">768x1024</option>
-                            <option value="1024x768">1024x768</option>
-                            <option value="512x512">512x512</option>
-                        </select>
-                        <button class="synthesize-btn" id="image-gen-btn" onclick="generateImage()">
-                            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
-                            <span id="image-gen-btn-text">Generate</span>
-                        </button>
+                <!-- Translate compose -->
+                <div class="compose-content" id="compose-translate">
+                    <div class="translate-compose">
+                        <div class="translate-controls">
+                            <select class="translate-select" id="translate-source-lang"></select>
+                            <button class="swap-btn" onclick="swapLanguages()" title="Swap languages">&#8644;</button>
+                            <select class="translate-select" id="translate-target-lang"></select>
+                            <button class="synthesize-btn" id="translate-btn" onclick="doTranslate()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>
+                                <span id="translate-btn-text">Translate</span>
+                            </button>
+                        </div>
+                        <textarea class="translate-textarea" id="translate-input" placeholder="Enter text to translate..."></textarea>
+                        <div class="translate-output-label">Translation</div>
+                        <textarea class="translate-textarea" id="translate-output" placeholder="Translation will appear here..." readonly></textarea>
                     </div>
-                    <div class="image-result" id="image-result" style="display:none">
-                        <!-- Result will appear here -->
+                    <div class="file-translate-section">
+                        <div class="translate-compose-header">File Translation</div>
+                        <div class="file-translate-controls">
+                            <input type="text" class="file-input" id="translate-file-path" placeholder="File path (e.g. ~/Documents/input.txt)">
+                            <select class="translate-select" id="translate-file-source"></select>
+                            <select class="translate-select" id="translate-file-target"></select>
+                            <button class="synthesize-btn" id="translate-file-btn" onclick="startFileTranslate()">
+                                <span id="translate-file-btn-text">Start</span>
+                            </button>
+                        </div>
+                        <div class="file-progress" id="translate-file-progress" style="display:none;">
+                            <span id="translate-file-progress-text">0 / 0 lines</span>
+                            <div class="file-progress-bar">
+                                <div class="file-progress-fill" id="translate-file-progress-fill" style="width:0%"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                
-                <div class="header" style="margin-top: 0;">
-                    <h2>Generation History</h2>
+
+                <!-- Image compose -->
+                <div class="compose-content" id="compose-image">
+                    <div class="image-compose">
+                        <textarea class="tts-textarea" id="image-prompt" placeholder="Enter prompt description..."></textarea>
+                        <div class="tts-controls">
+                            <select class="translate-select" id="image-resolution">
+                                <option value="1024x1024" selected>1024x1024</option>
+                                <option value="768x1024">768x1024</option>
+                                <option value="1024x768">1024x768</option>
+                                <option value="512x512">512x512</option>
+                            </select>
+                            <button class="synthesize-btn" id="image-gen-btn" onclick="generateImage()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+                                <span id="image-gen-btn-text">Generate</span>
+                            </button>
+                        </div>
+                        <div class="image-result" id="image-result" style="display:none"></div>
+                    </div>
                 </div>
-                <div id="image-history"><div class="empty">no history yet</div></div>
+
+                <!-- Vision compose -->
+                <div class="compose-content" id="compose-vision">
+                    <div class="vision-compose">
+                        <div class="vision-upload-area">
+                            <div class="vision-preview" id="vision-preview">
+                                <span>Drop or select image</span>
+                            </div>
+                            <div class="vision-inputs">
+                                <input type="file" id="vision-file-input" accept="image/*" style="font-size:12px;font-family:'JetBrains Mono',monospace;" onchange="onVisionFileSelect(this)">
+                                <textarea class="tts-textarea" id="vision-prompt" placeholder="Enter prompt (e.g. What is in this image?)" style="min-height:60px;">What is in this image? Describe everything you can see.</textarea>
+                                <div class="tts-controls">
+                                    <label style="font-size:11px;color:var(--text-3);">max tokens:</label>
+                                    <input type="number" class="tts-speed-input" id="vision-max-tokens" value="512" min="64" max="2048" step="64">
+                                    <button class="synthesize-btn" id="vision-analyze-btn" onclick="analyzeVision()">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+                                        <span id="vision-analyze-btn-text">Analyze</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="vision-result" style="display:none;margin-top:16px;padding-top:16px;border-top:1px dashed var(--border);">
+                            <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">Response</div>
+                            <div id="vision-result-text" style="font-size:14px;line-height:1.6;white-space:pre-wrap;"></div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -996,6 +703,54 @@
         // ========== Shared state ==========
         let currentTab = 'asr';
         let currentAudio = null;
+        const historySortState = {
+            tts: { field: 'time', ascending: false },
+            translate: { field: 'time', ascending: false },
+            image: { field: 'time', ascending: false },
+            vision: { field: 'time', ascending: false }
+        };
+        let _lastHistoryData = { tts: [], translate: [], image: [], vision: [] };
+
+        function sortHistoryRecords(records, field, ascending) {
+            const sorted = [...records].sort((a, b) => {
+                if (field === 'latency') return (b.latency_ms || 0) - (a.latency_ms || 0);
+                if (field === 'length') return (b.prompt || '').length - (a.prompt || '').length;
+                return new Date(b.timestamp) - new Date(a.timestamp);
+            });
+            return ascending ? sorted.reverse() : sorted;
+        }
+
+        function _applySortedRender(service) {
+            const st = historySortState[service];
+            const data = _lastHistoryData[service];
+            if (!data || !data.length) return;
+            const sorted = sortHistoryRecords(data, st.field, st.ascending);
+            if (service === 'tts') renderTTSHistory(sorted);
+            else if (service === 'translate') renderTranslateHistory(sorted);
+            else if (service === 'image') renderImageHistory(sorted);
+            else if (service === 'vision') renderVisionHistory(sorted);
+        }
+
+        function setHistorySort(service, sortBy, btn) {
+            const st = historySortState[service];
+            if (st.field === sortBy) {
+                st.ascending = !st.ascending;
+            } else {
+                st.field = sortBy;
+                st.ascending = false;
+            }
+            // Update button active state within the same panel
+            const panel = btn.closest('.header');
+            panel.querySelectorAll('.sort-btn').forEach(b => {
+                b.classList.remove('active');
+                const icon = b.querySelector('.sort-icon');
+                if (icon) icon.style.transform = 'rotate(0deg)';
+            });
+            btn.classList.add('active');
+            const icon = btn.querySelector('.sort-icon');
+            if (icon) icon.style.transform = st.ascending ? 'rotate(180deg)' : 'rotate(0deg)';
+            _applySortedRender(service);
+        }
 
         // ========== ASR state ==========
         let currentDate = null;
@@ -1012,11 +767,17 @@
 
         // ========== Translate state ==========
         let translatePaused = false;
+        let translateCurrentDate = null;
         let translateLanguages = [];
         let translateFilePolling = null;
         
         // ========== Image state ==========
         let imageCurrentDate = null;
+
+        // ========== Vision state ==========
+        let visionCurrentDate = null;
+        let visionPaused = false;
+        let visionUploadedPath = null;
 
         // ========== Tab switching ==========
         // ========== Mini Calendar ==========
@@ -1064,7 +825,9 @@
                 const hasData = dates.has(dateStr);
                 const isActive = (currentTab === 'asr' && dateStr === currentDate) ||
                                  (currentTab === 'tts' && dateStr === ttsCurrentDate) ||
-                                 (currentTab === 'image' && dateStr === imageCurrentDate);
+                                 (currentTab === 'translate' && dateStr === translateCurrentDate) ||
+                                 (currentTab === 'image' && dateStr === imageCurrentDate) ||
+                                 (currentTab === 'vision' && dateStr === visionCurrentDate);
                 const isToday = dateStr === today;
                 let cls = 'cal-day';
                 if (hasData) cls += ' has-data';
@@ -1084,10 +847,14 @@
                 ttsCurrentDate = dateStr;
                 loadTTSHistoryForDate(dateStr);
             } else if (currentTab === 'translate') {
+                translateCurrentDate = dateStr;
                 loadTranslateHistoryForDate(dateStr);
             } else if (currentTab === 'image') {
                 imageCurrentDate = dateStr;
                 loadImageHistoryForDate(dateStr);
+            } else if (currentTab === 'vision') {
+                visionCurrentDate = dateStr;
+                loadVisionHistoryForDate(dateStr);
             }
             renderCalendar();
         }
@@ -1110,6 +877,10 @@
                     const res = await fetch('/api/image/history');
                     const data = await res.json();
                     calAvailableDates.image = new Set(data.map(r => r.date));
+                } else if (service === 'vision') {
+                    const res = await fetch('/api/vision/history');
+                    const data = await res.json();
+                    calAvailableDates.vision = new Set(data.map(r => r.date));
                 }
             } catch(e) {
                 calAvailableDates[service] = new Set();
@@ -1117,11 +888,14 @@
             renderCalendar();
         }
 
+        let composePanelOpen = true;
+        const composeTitles = { tts: 'Synthesize', translate: 'Translate', image: 'Generate', vision: 'Analyze' };
+
         function switchTab(tab) {
             currentTab = tab;
 
             // Update service row active state
-            ['asr', 'tts', 'translate', 'image'].forEach(t => {
+            ['asr', 'tts', 'translate', 'image', 'vision'].forEach(t => {
                 const row = document.getElementById('svc-row-' + t);
                 row.classList.toggle('active', t === tab);
             });
@@ -1131,6 +905,33 @@
             document.getElementById('tts-panel').style.display = tab === 'tts' ? 'block' : 'none';
             document.getElementById('translate-panel').style.display = tab === 'translate' ? 'block' : 'none';
             document.getElementById('image-panel').style.display = tab === 'image' ? 'block' : 'none';
+            document.getElementById('vision-panel').style.display = tab === 'vision' ? 'block' : 'none';
+
+            // Update compose panel
+            const hasCompose = tab !== 'asr';
+            const panel = document.getElementById('compose-panel');
+            const handle = document.getElementById('resize-handle');
+            const openBtn = document.getElementById('compose-open-strip');
+            if (hasCompose) {
+                if (composePanelOpen) {
+                    panel.classList.remove('collapsed');
+                    handle.style.display = '';
+                    openBtn.style.display = 'none';
+                } else {
+                    panel.classList.add('collapsed');
+                    handle.style.display = 'none';
+                    openBtn.style.display = '';
+                }
+                document.getElementById('compose-panel-title').textContent = composeTitles[tab] || '';
+                ['tts', 'translate', 'image', 'vision'].forEach(t => {
+                    const el = document.getElementById('compose-' + t);
+                    if (el) el.classList.toggle('active', t === tab);
+                });
+            } else {
+                panel.classList.add('collapsed');
+                handle.style.display = 'none';
+                openBtn.style.display = 'none';
+            }
 
             // Refresh calendar for this service
             loadCalendarDates(tab);
@@ -1151,7 +952,47 @@
                 loadImageHistory();
                 updateImageStats();
             }
+            if (tab === 'vision') {
+                loadVisionStatus();
+                loadVisionHistory();
+                updateVisionStats();
+            }
         }
+
+        function toggleComposePanel() {
+            composePanelOpen = !composePanelOpen;
+            switchTab(currentTab);
+        }
+
+        // Resize handle drag
+        (function initResize() {
+            const handle = document.getElementById('resize-handle');
+            const panel = document.getElementById('compose-panel');
+            let dragging = false;
+            handle.addEventListener('mousedown', (e) => {
+                dragging = true;
+                handle.classList.add('active');
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+                e.preventDefault();
+            });
+            document.addEventListener('mousemove', (e) => {
+                if (!dragging) return;
+                const containerRight = document.querySelector('.container').getBoundingClientRect().right;
+                const newWidth = Math.max(250, Math.min(600, containerRight - e.clientX));
+                panel.style.width = newWidth + 'px';
+            });
+            document.addEventListener('mouseup', () => {
+                if (!dragging) return;
+                dragging = false;
+                handle.classList.remove('active');
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            });
+            handle.addEventListener('dblclick', () => {
+                panel.style.width = '350px';
+            });
+        })();
 
         function onServiceRowClick(event, tab) {
             // Collapse all other rows, expand the clicked one
@@ -1263,13 +1104,7 @@
                         <div class="transcript-header">
                             <span class="transcript-time">${time}</span>
                             <span class="transcript-latency">
-                                <svg viewBox="0 0 24 24" fill="currentColor">
-                                    <circle cx="12" cy="13" r="8" fill="none" stroke="currentColor" stroke-width="2"/>
-                                    <path d="M12 9v4l2.5 2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                                    <circle cx="10" cy="12" r="0.8"/><circle cx="14" cy="12" r="0.8"/>
-                                    <path d="M10 15.5q2 1.5 4 0" fill="none" stroke="currentColor" stroke-width="0.8" stroke-linecap="round"/>
-                                    <rect x="10" y="3" width="4" height="2" rx="0.5"/>
-                                </svg>
+                                ${CLOCK_ICON}
                                 ${latency.toFixed(1)}s
                             </span>
                             <span class="transcript-model">${model}</span>
@@ -1283,8 +1118,8 @@
                         </div>
                         <div class="transcript-footer">
                             <button class="play-btn" onclick="toggleAudio(this)">
-                                <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                                <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                                <svg class="icon-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5,3 19,12 5,21"/></svg>
+                                <svg class="icon-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
                                 <span class="btn-text">play</span>
                             </button>
                             <a href="/audio/${date}/${r.audio_file}" download class="play-btn" style="text-decoration:none;text-align:center;">download</a>
@@ -1489,6 +1324,8 @@
             return `${m}:${String(sec).padStart(2, '0')}`;
         }
 
+        const CLOCK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>';
+
         function escapeHtml(text) {
             if (!text) return '';
             return text
@@ -1594,13 +1431,15 @@
         async function loadTTSHistory() {
             const res = await fetch('/api/tts/history');
             const records = await res.json();
-            renderTTSHistory(records);
+            _lastHistoryData.tts = records;
+            renderTTSHistory(sortHistoryRecords(records, historySortState.tts.field, historySortState.tts.ascending));
         }
 
         async function loadTTSHistoryForDate(date) {
             const res = await fetch(`/api/tts/history/${date}`);
             const records = await res.json();
-            renderTTSHistory(records);
+            _lastHistoryData.tts = records;
+            renderTTSHistory(sortHistoryRecords(records, historySortState.tts.field, historySortState.tts.ascending));
         }
 
         function renderTTSHistory(records) {
@@ -1620,7 +1459,7 @@
                         <span class="transcript-time">${time}</span>
                         <span class="tts-voice-badge">${r.voice}</span>
                         <span class="tts-lang-badge">${r.language}</span>
-                        <span class="transcript-latency">${latency}s</span>
+                        <span class="transcript-latency">${CLOCK_ICON}${latency}s</span>
                     </div>
                     <div class="transcript-text">${escapeHtml(r.text)}</div>
                     <div class="waveform-container" onclick="seekAudio(event, this)">
@@ -1630,8 +1469,8 @@
                     </div>
                     <div class="transcript-footer">
                         <button class="play-btn" onclick="toggleAudio(this)">
-                            <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                            <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                            <svg class="icon-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5,3 19,12 5,21"/></svg>
+                            <svg class="icon-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
                             <span class="btn-text">play</span>
                         </button>
                         <a href="/tts_audio/${r.audio_file}" download class="play-btn" style="text-decoration:none;text-align:center;">download</a>
@@ -1768,16 +1607,16 @@
         async function loadTranslateHistory() {
             const res = await fetch('/api/translate/history');
             const records = await res.json();
-            renderTranslateHistory(records);
+            _lastHistoryData.translate = records;
+            renderTranslateHistory(sortHistoryRecords(records, historySortState.translate.field, historySortState.translate.ascending));
         }
-        
+
         async function loadTranslateHistoryForDate(date) {
-            // Filter client side as endpoint returns all for now (or implement date filter on server)
-            // For now reusing all history endpoint and filtering
             const res = await fetch('/api/translate/history');
             let records = await res.json();
             records = records.filter(r => r.timestamp.startsWith(date));
-            renderTranslateHistory(records);
+            _lastHistoryData.translate = records;
+            renderTranslateHistory(sortHistoryRecords(records, historySortState.translate.field, historySortState.translate.ascending));
         }
 
         function renderTranslateHistory(records) {
@@ -1789,6 +1628,7 @@
             
             container.innerHTML = records.map(r => {
                 const time = new Date(r.timestamp).toLocaleTimeString();
+                const latency = (r.latency_ms / 1000).toFixed(1);
                 return `
                 <div class="translate-item">
                     <div class="transcript-header">
@@ -1796,6 +1636,7 @@
                         <span class="translate-lang-badge">${r.source_lang}</span>
                         <span class="translate-arrow">→</span>
                         <span class="translate-lang-badge">${r.target_lang}</span>
+                        <span class="transcript-latency">${CLOCK_ICON}${latency}s</span>
                     </div>
                     <div class="translate-source-text">${escapeHtml(r.source_text)}</div>
                     <div class="translate-result-text">${escapeHtml(r.translated_text)}</div>
@@ -1899,7 +1740,7 @@
                 const data = await res.json();
                 
                 resultDiv.innerHTML = `<img src="${data.image_url}" alt="Generated Image">
-                    <div style="font-size:11px;color:#9ca3af;margin-top:4px;">${data.resolution} | ${(data.latency_ms/1000).toFixed(1)}s | steps ${data.steps}${data.seed != null ? ' | seed '+data.seed : ''}</div>`;
+                    <div style="font-size:11px;color:var(--text-3);margin-top:4px;">${data.resolution} | ${(data.latency_ms/1000).toFixed(1)}s | steps ${data.steps}${data.seed != null ? ' | seed '+data.seed : ''}</div>`;
                 resultDiv.style.display = 'block';
                 
                 loadImageHistory();
@@ -1915,14 +1756,16 @@
         async function loadImageHistory() {
             const res = await fetch('/api/image/history');
             const records = await res.json();
-            renderImageHistory(records);
+            _lastHistoryData.image = records;
+            renderImageHistory(sortHistoryRecords(records, historySortState.image.field, historySortState.image.ascending));
         }
-        
+
         async function loadImageHistoryForDate(date) {
             const res = await fetch('/api/image/history');
             let records = await res.json();
             records = records.filter(r => r.timestamp.startsWith(date));
-            renderImageHistory(records);
+            _lastHistoryData.image = records;
+            renderImageHistory(sortHistoryRecords(records, historySortState.image.field, historySortState.image.ascending));
         }
         
         function renderImageHistory(records) {
@@ -1944,15 +1787,162 @@
                         <div class="transcript-header">
                             <span class="transcript-time">${time}</span>
                             <span class="translate-lang-badge">${r.resolution}</span>
-                            <span class="transcript-latency">${latency}s</span>
+                            <span class="transcript-latency">${CLOCK_ICON}${latency}s</span>
                         </div>
                         <div class="image-item-prompt">${escapeHtml(r.prompt)}</div>
                         <div class="transcript-footer">
-                            <a href="${imageUrl}" download class="icon-btn" style="width:auto;padding:0 8px;font-size:11px;">download</a>
+                            <a href="${imageUrl}" download class="play-btn" style="text-decoration:none;text-align:center;">download</a>
                         </div>
                     </div>
                 </div>`;
             }).join('');
+        }
+
+        // ========== Vision functions ==========
+
+        async function loadVisionStatus() {
+            const res = await fetch('/api/vision/status');
+            const status = await res.json();
+
+            const dot = document.getElementById('vision-status-dot');
+            dot.className = 'status-dot';
+            if (status.loaded) {
+                // green
+            } else if (status.loading) {
+                dot.classList.add('loading');
+            } else {
+                dot.classList.add('error');
+            }
+
+            document.getElementById('svc-model-short-vision').textContent =
+                status.loaded ? status.model_short : 'loading...';
+        }
+
+        function onVisionFileSelect(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const preview = document.getElementById('vision-preview');
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                preview.innerHTML = '<img src="' + e.target.result + '">';
+            };
+            reader.readAsDataURL(file);
+            visionUploadedPath = null; // will upload on analyze
+        }
+
+        async function analyzeVision() {
+            const fileInput = document.getElementById('vision-file-input');
+            const prompt = document.getElementById('vision-prompt').value;
+            const maxTokens = parseInt(document.getElementById('vision-max-tokens').value) || 512;
+            const btn = document.getElementById('vision-analyze-btn');
+            const btnText = document.getElementById('vision-analyze-btn-text');
+            const resultDiv = document.getElementById('vision-result');
+
+            if (!fileInput.files[0] && !visionUploadedPath) {
+                alert('Select an image first');
+                return;
+            }
+
+            btn.disabled = true;
+            btnText.textContent = 'Analyzing...';
+            resultDiv.style.display = 'none';
+
+            try {
+                // Upload if not already uploaded
+                let imagePath = visionUploadedPath;
+                if (!imagePath && fileInput.files[0]) {
+                    const formData = new FormData();
+                    formData.append('file', fileInput.files[0]);
+                    const uploadRes = await fetch('/api/vision/upload', {
+                        method: 'POST',
+                        body: formData,
+                    });
+                    if (!uploadRes.ok) throw new Error('Upload failed: ' + await uploadRes.text());
+                    const uploadData = await uploadRes.json();
+                    imagePath = uploadData.path;
+                    visionUploadedPath = imagePath;
+                }
+
+                const res = await fetch('/api/vision/analyze', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({image: imagePath, prompt, max_tokens: maxTokens})
+                });
+
+                if (!res.ok) throw new Error(await res.text());
+
+                const data = await res.json();
+                document.getElementById('vision-result-text').textContent = data.response;
+                resultDiv.style.display = 'block';
+
+                loadVisionHistory();
+                updateVisionStats();
+
+            } catch(e) {
+                alert('Vision failed: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btnText.textContent = 'Analyze';
+            }
+        }
+
+        async function loadVisionHistory() {
+            const res = await fetch('/api/vision/history');
+            const records = await res.json();
+            _lastHistoryData.vision = records;
+            renderVisionHistory(sortHistoryRecords(records, historySortState.vision.field, historySortState.vision.ascending));
+        }
+
+        async function loadVisionHistoryForDate(date) {
+            const res = await fetch('/api/vision/history');
+            let records = await res.json();
+            records = records.filter(r => r.timestamp.startsWith(date));
+            _lastHistoryData.vision = records;
+            renderVisionHistory(sortHistoryRecords(records, historySortState.vision.field, historySortState.vision.ascending));
+        }
+
+        function renderVisionHistory(records) {
+            const container = document.getElementById('vision-history');
+            if (!records.length) {
+                container.innerHTML = '<div class="empty">no vision history</div>';
+                return;
+            }
+
+            container.innerHTML = records.map(r => {
+                const time = new Date(r.timestamp).toLocaleTimeString();
+                const latency = (r.latency_ms / 1000).toFixed(1);
+                const imageUrl = '/vision_output/' + r.image_file;
+
+                return '<div class="vision-item">' +
+                    '<img src="' + imageUrl + '" class="vision-item-thumb" onclick="window.open(\'' + imageUrl + '\', \'_blank\')">' +
+                    '<div class="vision-item-details">' +
+                        '<div class="transcript-header">' +
+                            '<span class="transcript-time">' + time + '</span>' +
+                            '<span class="transcript-latency">' + CLOCK_ICON + latency + 's</span>' +
+                        '</div>' +
+                        '<div class="image-item-prompt">' + escapeHtml(r.prompt) + '</div>' +
+                        '<div class="vision-response">' + escapeHtml(r.response_text) + '</div>' +
+                    '</div>' +
+                '</div>';
+            }).join('');
+        }
+
+        function toggleVisionPause() {
+            const action = visionPaused ? 'resume' : 'pause';
+            fetch('/api/vision/server/' + action, {method: 'POST'})
+                .then(() => {
+                    visionPaused = !visionPaused;
+                    loadVisionStatus();
+                });
+        }
+
+        function restartVisionModel() {
+            fetch('/api/vision/server/restart', {method: 'POST'})
+                .then(res => res.json())
+                .then(data => {
+                    alert('Vision model restarted');
+                    loadVisionStatus();
+                });
         }
 
         // ========== Stats helpers ==========
@@ -1990,6 +1980,17 @@
                 const todayRecords = records.filter(r => r.timestamp && r.timestamp.startsWith(today));
                 document.getElementById('image-stat-total').textContent = records.length + ' images';
                 document.getElementById('image-stat-today').textContent = todayRecords.length + ' images';
+            } catch(e) {}
+        }
+
+        async function updateVisionStats() {
+            try {
+                const res = await fetch('/api/vision/history');
+                const records = await res.json();
+                const today = new Date().toISOString().slice(0, 10);
+                const todayRecords = records.filter(r => r.timestamp && r.timestamp.startsWith(today));
+                document.getElementById('vision-stat-total').textContent = records.length + ' items';
+                document.getElementById('vision-stat-today').textContent = todayRecords.length + ' items';
             } catch(e) {}
         }
 
@@ -2033,8 +2034,13 @@
                 document.getElementById('svc-model-short-image').textContent =
                     health.image_loaded ? health.image_model : 'loading...';
 
+                // Vision
+                updateDot('vision-status-dot', health.vision_loaded, !health.vision_loaded);
+                document.getElementById('svc-model-short-vision').textContent =
+                    health.vision_loaded ? health.vision_model.split('/').pop() : 'loading...';
+
                 _allModelsReady = health.loaded && health.tts_loaded
-                    && health.translate_loaded && health.image_loaded;
+                    && health.translate_loaded && health.image_loaded && health.vision_loaded;
 
                 // Populate ASR model selector once loaded
                 if (health.loaded) {
@@ -2048,7 +2054,7 @@
                 }
             } catch(e) {
                 // Server not up yet - mark everything as loading
-                ['status-dot', 'tts-status-dot', 'translate-status-dot', 'image-status-dot'].forEach(id => {
+                ['status-dot', 'tts-status-dot', 'translate-status-dot', 'image-status-dot', 'vision-status-dot'].forEach(id => {
                     updateDot(id, false, true);
                 });
             }
@@ -2057,11 +2063,157 @@
             updateTTSStats();
             updateTranslateStats();
             updateImageStats();
+            updateVisionStats();
         }
 
+        // ========== GPU stats ==========
+        function fmtMB(mb) {
+            if (mb >= 1024) return (mb / 1024).toFixed(1) + 'G';
+            return mb + 'M';
+        }
+
+        function gpuBarClass(pct) {
+            if (pct >= 70) return 'hot';
+            if (pct >= 40) return 'warm';
+            return 'cool';
+        }
+
+        function fmtGB(gb) { return gb >= 1000 ? (gb / 1000).toFixed(1) + 'T' : gb.toFixed(0) + 'G'; }
+        function diskBarClass(pct) {
+            if (pct >= 90) return 'hot';
+            if (pct >= 75) return 'warm';
+            return 'cool';
+        }
+
+        async function refreshGpuStats() {
+            try {
+                const res = await fetch('/api/gpu');
+                const g = await res.json();
+
+                // GPU utilization bar
+                const util = g.gpu_utilization || 0;
+                const utilBar = document.getElementById('gpu-util-bar');
+                utilBar.style.width = util + '%';
+                utilBar.className = 'gpu-bar-fill ' + gpuBarClass(util);
+                document.getElementById('gpu-util-val').textContent = util + '%';
+
+                // Memory bar (MLX active / total unified memory)
+                const totalMB = (g.total_memory_gb || 0) * 1024;
+                const mlxMB = g.metal_active_mb || 0;
+                const memPct = totalMB > 0 ? Math.round(mlxMB / totalMB * 100) : 0;
+                const memBar = document.getElementById('gpu-mem-bar');
+                memBar.style.width = memPct + '%';
+                memBar.className = 'gpu-bar-fill ' + gpuBarClass(memPct);
+                document.getElementById('gpu-mem-val').textContent = fmtMB(mlxMB);
+
+                // Device name
+                if (g.device) {
+                    document.getElementById('gpu-device-name').textContent = g.device.replace('Apple ', '');
+                }
+
+                // Disk bar
+                if (g.disk_total_gb) {
+                    const diskUsedPct = Math.round(g.disk_used_gb / g.disk_total_gb * 100);
+                    const diskBar = document.getElementById('disk-bar');
+                    diskBar.style.width = diskUsedPct + '%';
+                    diskBar.className = 'gpu-bar-fill ' + diskBarClass(diskUsedPct);
+                    document.getElementById('disk-val').textContent = fmtGB(g.disk_free_gb);
+                }
+
+                // USB bar (show/hide based on mount status)
+                const usbRow = document.getElementById('usb-bar-row');
+                if (g.usb_mounted) {
+                    usbRow.style.display = '';
+                    const usbUsedPct = Math.round(g.usb_used_gb / g.usb_total_gb * 100);
+                    const usbBarEl = document.getElementById('usb-bar');
+                    usbBarEl.style.width = usbUsedPct + '%';
+                    usbBarEl.className = 'gpu-bar-fill ' + diskBarClass(usbUsedPct);
+                    document.getElementById('usb-val').textContent = fmtGB(g.usb_free_gb);
+                } else {
+                    usbRow.style.display = 'none';
+                }
+            } catch(e) {}
+        }
+
+        // Theme switching
+        function setTheme(mode) {
+            localStorage.setItem('mls-theme', mode);
+            applyTheme(mode);
+            document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+            const id = mode === 'auto' ? 'theme-auto' : mode === 'dark' ? 'theme-dark' : 'theme-light';
+            document.getElementById(id).classList.add('active');
+        }
+        function applyTheme(mode) {
+            if (mode === 'auto') {
+                const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+            } else {
+                document.documentElement.setAttribute('data-theme', mode);
+            }
+        }
+        (function initTheme() {
+            const saved = localStorage.getItem('mls-theme') || 'light';
+            applyTheme(saved);
+            document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+            const id = saved === 'auto' ? 'theme-auto' : saved === 'dark' ? 'theme-dark' : 'theme-light';
+            document.getElementById(id).classList.add('active');
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+                if (localStorage.getItem('mls-theme') === 'auto') applyTheme('auto');
+            });
+        })();
+
+        // Log histogram chart
+        let _logEventSource = null;
+        async function refreshLogChart() {
+            try {
+                const res = await fetch('/api/logs/histogram');
+                const data = await res.json();
+                const hist = data.histogram; // [0]=now, [59]=59min ago
+                const max = Math.max(...hist, 1);
+                const chart = document.getElementById('log-chart');
+                // Render reversed: left=oldest, right=newest
+                chart.innerHTML = hist.slice().reverse().map((v, i) => {
+                    const h = v > 0 ? Math.max(2, Math.round(v / max * 18)) : 0;
+                    return '<div class="log-chart-bar' + (v > 0 ? ' has-data' : '') + '" style="height:' + h + 'px"></div>';
+                }).join('');
+                document.getElementById('log-chart-count').textContent = data.total + ' lines/1h';
+            } catch(e) {}
+        }
+
+        function openLogViewer() {
+            const modal = document.getElementById('log-modal');
+            const body = document.getElementById('log-modal-body');
+            modal.classList.add('visible');
+            body.innerHTML = '';
+            // Connect SSE
+            _logEventSource = new EventSource('/api/logs/stream');
+            _logEventSource.onmessage = function(e) {
+                const line = JSON.parse(e.data);
+                const div = document.createElement('div');
+                div.textContent = line;
+                if (line.includes('[ERROR]')) div.className = 'log-line-error';
+                else if (line.includes('[WARNING]') || line.includes('[WARN]')) div.className = 'log-line-warning';
+                else if (line.includes('[INFO]')) div.className = 'log-line-info';
+                body.appendChild(div);
+                // Auto-scroll to bottom
+                body.scrollTop = body.scrollHeight;
+            };
+        }
+
+        function closeLogViewer() {
+            document.getElementById('log-modal').classList.remove('visible');
+            if (_logEventSource) {
+                _logEventSource.close();
+                _logEventSource = null;
+            }
+        }
+
+        switchTab('asr');
         loadDates();
         initCalendar();
         refreshServiceStatuses();
+        refreshGpuStats();
+        refreshLogChart();
 
         // Auto-refresh: poll statuses + active tab data every 10s
         // Skip content refresh when audio is playing to avoid destroying DOM nodes
@@ -2069,6 +2221,8 @@
         setInterval(() => {
             // Always poll service statuses (dots) until all models are ready
             if (!_allModelsReady) refreshServiceStatuses();
+            refreshGpuStats();
+            refreshLogChart();
 
             if (currentAudio && !currentAudio.paused) return;
             const activeTab = document.querySelector('.service-row.active')?.id?.replace('svc-row-', '');
@@ -2083,6 +2237,9 @@
             } else if (activeTab === 'image') {
                 loadImageHistory();
                 updateImageStats();
+            } else if (activeTab === 'vision') {
+                loadVisionHistory();
+                updateVisionStats();
             }
         }, 3000);
     </script>

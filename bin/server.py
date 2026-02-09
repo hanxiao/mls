@@ -16,21 +16,25 @@ import threading
 import re
 import logging
 import logging.handlers
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
 import mlx.core as mx
-from mlx_lm import load as mlx_load, stream_generate
+from mlx_lm import load as mlx_load, generate as lm_generate
 from mlx_audio.stt.utils import load_model as stt_load_model
 from mlx_audio.stt.generate import generate_transcription
 from mlx_audio.tts.utils import load_model as tts_load_fn
 from mlx_audio.tts.generate import generate_audio
+from mlx_vlm import load as vlm_load, generate as vlm_generate
+from mlx_vlm.prompt_utils import apply_chat_template
+from mlx_vlm.utils import load_config as vlm_load_config
 
 # mflux site-packages path (installed in separate uv tool venv, added to sys.path at load time)
 # mflux import stays deferred because it depends on sys.path setup at runtime
 MFLUX_SITE_PACKAGES = os.path.expanduser("~/.local/share/uv/tools/mflux/lib/python3.12/site-packages")
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
@@ -129,6 +133,17 @@ translate_model_dir = "/Volumes/One Touch/ai-models/mlx-community/translategemma
 translate_model_loading = False
 translate_server_paused = False
 
+# ============================================================
+# Vision globals
+# ============================================================
+vision_model = None
+vision_processor = None
+vision_config = None
+vision_model_name = "jinaai/jina-vlm-mlx"
+vision_model_loading = False
+vision_server_paused = False
+VISION_MODEL_PATH = "/Volumes/One Touch/ai-models/jinaai/jina-vlm-mlx"
+
 # Single lock for ALL GPU inference - MLX Metal cannot handle concurrent GPU access.
 # Separate per-service locks allowed ASR+TTS+Translate+Image to hit the GPU
 # simultaneously, causing Metal OOM crashes.
@@ -143,7 +158,8 @@ def _maybe_clear_gpu_cache():
     global _gpu_request_count
     _gpu_request_count += 1
     if _gpu_request_count % _GPU_CACHE_CLEAR_INTERVAL == 0:
-        mx.metal.clear_cache()
+        gc.collect()
+        mx.clear_cache()
         logger.info(f"Metal cache cleared (request #{_gpu_request_count})")
 
 
@@ -179,8 +195,39 @@ PORT = 18321
 PROJECT_DIR = Path(__file__).parent.parent.resolve()
 HISTORY_DIR = PROJECT_DIR / "history"
 TTS_OUTPUT_DIR = PROJECT_DIR / "tts_output"
+VISION_OUTPUT_DIR = PROJECT_DIR / "vision_output"
 
-app = FastAPI(title="MLX Serving")
+@asynccontextmanager
+async def lifespan(app):
+    """Load models in a background thread so /health and /history are available immediately."""
+    def _load_and_log(fn, name):
+        try:
+            with _gpu_lock:
+                fn()
+        except Exception as e:
+            logger.error(f"Failed to load {name}: {e}")
+
+    loaders = [
+        (load_model, "ASR"),
+        (load_tts_model, "TTS"),
+        (load_translate_model, "Translate"),
+        (load_image_model, "Image"),
+        (load_vision_model, "Vision"),
+    ]
+    threads = []
+    for fn, name in loaders:
+        t = threading.Thread(target=_load_and_log, args=(fn, name), daemon=True)
+        t.start()
+        threads.append(t)
+
+    def _wait_all():
+        for t in threads:
+            t.join()
+        logger.info("All models loaded")
+    threading.Thread(target=_wait_all, daemon=True).start()
+    yield
+
+app = FastAPI(title="MLX Serving", lifespan=lifespan)
 
 
 @app.exception_handler(Exception)
@@ -336,6 +383,37 @@ def save_image_history(prompt: str, image_path: str, latency_ms: float, resoluti
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 # ============================================================
+# Vision helpers
+# ============================================================
+
+def save_vision_history(prompt: str, image_path: str, response_text: str,
+                        latency_ms: float, prompt_tokens: int = 0,
+                        generation_tokens: int = 0, generation_tps: float = 0.0):
+    """Save vision analysis to history."""
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    day_dir = HISTORY_DIR / date_str
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    record = {
+        "type": "vision",
+        "timestamp": now.isoformat(),
+        "prompt": prompt,
+        "image_path": str(Path(image_path).resolve()),
+        "image_file": Path(image_path).name,
+        "response_text": response_text,
+        "latency_ms": round(latency_ms, 2),
+        "prompt_tokens": prompt_tokens,
+        "generation_tokens": generation_tokens,
+        "generation_tps": round(generation_tps, 2),
+        "model": vision_model_name,
+    }
+    jsonl_path = day_dir / "vision_history.jsonl"
+    with open(jsonl_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+# ============================================================
 # Translate helpers
 # ============================================================
 
@@ -358,19 +436,13 @@ def _translate_text_impl(text: str, source: str, target: str) -> tuple[str, floa
     )
 
     t0 = time.time()
-    result_parts = []
-    for resp in stream_generate(
+    result = lm_generate(
         translate_model, translate_tokenizer, prompt=prompt,
-        max_tokens=1024,
-    ):
-        segment = resp.text
-        if "<end_of_turn>" in segment:
-            result_parts.append(segment.split("<end_of_turn>")[0])
-            break
-        result_parts.append(segment)
+        max_tokens=1024, verbose=False,
+    )
     elapsed = time.time() - t0
 
-    clean = "".join(result_parts).strip()
+    clean = result.split("<end_of_turn>")[0].strip()
     _maybe_clear_gpu_cache()
     return clean, elapsed
 
@@ -477,6 +549,12 @@ class ImageGenRequest(BaseModel):
     negative_prompt: str | None = None
     seed: int | None = None
     steps: int = 9
+
+
+class VisionRequest(BaseModel):
+    image: str  # local file path or uploaded filename
+    prompt: str = "What is in this image? Describe everything you can see."
+    max_tokens: int = 512
 
 
 def load_model(model_name: str = None):
@@ -596,6 +674,32 @@ def load_image_model():
         image_model_loading = False
 
 
+def load_vision_model():
+    """Load Vision-Language model (jina-vlm-mlx)."""
+    global vision_model, vision_processor, vision_config, vision_model_loading
+
+    if not os.path.isdir(VISION_MODEL_PATH):
+        print(f"Vision model not available (USB not mounted?): {VISION_MODEL_PATH}")
+        return
+
+    vision_model_loading = True
+    print(f"Loading vision model from {VISION_MODEL_PATH}...")
+    start = time.time()
+
+    try:
+        vision_model, vision_processor = vlm_load(VISION_MODEL_PATH)
+        vision_config = vlm_load_config(VISION_MODEL_PATH)
+        elapsed = time.time() - start
+        print(f"Vision model loaded in {elapsed:.2f}s")
+    except Exception as e:
+        print(f"Failed to load vision model: {e}")
+        vision_model = None
+        vision_processor = None
+        vision_config = None
+    finally:
+        vision_model_loading = False
+
+
 def convert_wav_to_ogg(wav_path: str, ogg_path: str) -> bool:
     """Convert WAV to OGG Opus using ffmpeg. Returns True on success."""
     try:
@@ -623,22 +727,6 @@ def convert_to_wav(audio_path: str) -> str:
 
 
 # ============================================================
-# Startup
-# ============================================================
-
-@app.on_event("startup")
-async def startup_event():
-    """Load models in a background thread so /health and /history are available immediately."""
-    def _load_all_models():
-        load_model()
-        load_tts_model()
-        load_translate_model()
-        load_image_model()
-        logger.info("All models loaded")
-    threading.Thread(target=_load_all_models, daemon=True).start()
-
-
-# ============================================================
 # Health / Status endpoints
 # ============================================================
 
@@ -654,6 +742,8 @@ async def health():
         "translate_loaded": translate_model is not None,
         "image_model": "z-image-turbo-8bit",
         "image_loaded": image_model is not None,
+        "vision_model": vision_model_name,
+        "vision_loaded": vision_model is not None,
     }
 
 
@@ -691,6 +781,8 @@ async def resume_server():
 async def restart_server():
     global model
     model = None
+    gc.collect()
+    mx.clear_cache()
     load_model()
     return {"status": "restarted", "model": current_model_name}
 
@@ -845,7 +937,7 @@ async def switch_tts_model(req: SwitchTTSModelRequest):
         raise HTTPException(status_code=400, detail=f"TTS model not available: {req.model}")
     tts_model = None
     gc.collect()
-    mx.metal.clear_cache()
+    mx.clear_cache()
     load_tts_model(req.model)
     return {"status": "switched", "model": tts_model_name}
 
@@ -1228,7 +1320,7 @@ async def restart_tts_server():
     global tts_model
     tts_model = None
     gc.collect()
-    mx.metal.clear_cache()
+    mx.clear_cache()
     load_tts_model()
     return {"status": "restarted", "model": tts_model_name}
 
@@ -1270,7 +1362,7 @@ async def restart_translate_server():
     translate_model = None
     translate_tokenizer = None
     gc.collect()
-    mx.metal.clear_cache()
+    mx.clear_cache()
     load_translate_model()
     return {"status": "restarted", "model": translate_model_name}
 
@@ -1443,7 +1535,8 @@ def generate_image(req: ImageGenRequest):
                 num_inference_steps=req.steps,
             )
             # Image gen is the biggest memory consumer - always clear cache after
-            mx.metal.clear_cache()
+            gc.collect()
+            mx.clear_cache()
 
         image.save(path=str(output_file))
 
@@ -1497,6 +1590,317 @@ async def get_image_history():
                                 all_records.append(record)
     all_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
     return JSONResponse(all_records)
+
+
+# ============================================================
+# Vision endpoints
+# ============================================================
+
+@app.get("/api/vision/status")
+async def get_vision_status():
+    return {
+        "model": vision_model_name,
+        "model_short": vision_model_name.split("/")[-1],
+        "loaded": vision_model is not None,
+        "loading": vision_model_loading,
+        "paused": vision_server_paused,
+    }
+
+
+@app.post("/api/vision/upload")
+async def upload_vision_file(file: UploadFile = File(...)):
+    """Upload image file, save to VISION_OUTPUT_DIR, return path."""
+    VISION_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    file_id = uuid.uuid4().hex[:12]
+    ext = Path(file.filename).suffix or ".png"
+    dest = VISION_OUTPUT_DIR / f"vision_{file_id}{ext}"
+    content = await file.read()
+    with open(dest, "wb") as f:
+        f.write(content)
+    return {"path": str(dest), "filename": dest.name}
+
+
+@app.post("/api/vision/analyze")
+def analyze_vision(req: VisionRequest):
+    if vision_server_paused:
+        raise HTTPException(503, "Vision server is paused")
+    if vision_model is None:
+        raise HTTPException(503, "Vision model not loaded")
+
+    # Resolve image path
+    image_path = req.image
+    if not os.path.isabs(image_path):
+        # Treat as filename in VISION_OUTPUT_DIR
+        candidate = VISION_OUTPUT_DIR / image_path
+        if candidate.exists():
+            image_path = str(candidate)
+    if not os.path.exists(image_path):
+        raise HTTPException(400, f"Image not found: {req.image}")
+
+    # Copy to vision_output if not already there, so history thumbnails work
+    VISION_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    src = Path(image_path)
+    if VISION_OUTPUT_DIR not in src.resolve().parents:
+        dest = VISION_OUTPUT_DIR / f"vision_{uuid.uuid4().hex[:12]}{src.suffix}"
+        shutil.copy2(image_path, dest)
+        image_path = str(dest)
+
+    start = time.time()
+    try:
+        formatted = apply_chat_template(
+            vision_processor, vision_config, req.prompt, num_images=1
+        )
+        with _gpu_lock:
+            result = vlm_generate(
+                vision_model, vision_processor,
+                prompt=formatted, image=image_path,
+                max_tokens=req.max_tokens, verbose=False,
+            )
+            _maybe_clear_gpu_cache()
+
+        latency_ms = (time.time() - start) * 1000
+        response_text = result.text if hasattr(result, 'text') else str(result)
+        prompt_tokens = getattr(result, 'prompt_tokens', 0)
+        generation_tokens = getattr(result, 'generation_tokens', 0)
+        generation_tps = getattr(result, 'generation_tps', 0.0)
+
+        save_vision_history(
+            prompt=req.prompt,
+            image_path=image_path,
+            response_text=response_text,
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            generation_tokens=generation_tokens,
+            generation_tps=generation_tps,
+        )
+
+        logger.info(f"Vision: {len(req.prompt)}ch prompt, {len(response_text)}ch response in {latency_ms:.0f}ms")
+
+        return {
+            "status": "ok",
+            "response": response_text,
+            "latency_ms": round(latency_ms, 2),
+            "image": req.image,
+            "prompt": req.prompt,
+            "prompt_tokens": prompt_tokens,
+            "generation_tokens": generation_tokens,
+            "generation_tps": round(generation_tps, 2),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Vision error: {e}", exc_info=True)
+        raise HTTPException(500, f"Vision analysis failed: {str(e)}")
+
+
+@app.get("/vision_output/{filename}")
+async def get_vision_file(filename: str):
+    """Serve uploaded/processed vision images."""
+    file_path = VISION_OUTPUT_DIR / filename
+    if file_path.exists():
+        return FileResponse(file_path)
+    raise HTTPException(404, "Image not found")
+
+
+@app.get("/api/vision/history")
+async def get_vision_history():
+    """Get vision history (all dates)."""
+    all_records = []
+    if HISTORY_DIR.exists():
+        for d in sorted(HISTORY_DIR.iterdir(), reverse=True):
+            if d.is_dir():
+                jsonl_path = d / "vision_history.jsonl"
+                if jsonl_path.exists():
+                    with open(jsonl_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.strip():
+                                record = json.loads(line)
+                                record["date"] = d.name
+                                all_records.append(record)
+    all_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+    return JSONResponse(all_records)
+
+
+@app.post("/api/vision/server/pause")
+async def pause_vision_server():
+    global vision_server_paused
+    vision_server_paused = True
+    return {"status": "paused"}
+
+
+@app.post("/api/vision/server/resume")
+async def resume_vision_server():
+    global vision_server_paused
+    vision_server_paused = False
+    return {"status": "active"}
+
+
+@app.post("/api/vision/server/restart")
+async def restart_vision_server():
+    global vision_model, vision_processor, vision_config
+    vision_model = None
+    vision_processor = None
+    vision_config = None
+    gc.collect()
+    mx.clear_cache()
+    load_vision_model()
+    return {"status": "restarted", "model": vision_model_name}
+
+
+# ============================================================
+# GPU stats endpoint
+# ============================================================
+
+_gpu_stats_cache: dict = {"data": None, "ts": 0.0}
+
+def _get_gpu_stats() -> dict:
+    """Get GPU utilization, memory, and disk stats. Cached for 2s to avoid ioreg overhead."""
+    import re
+    import shutil
+
+    now = time.time()
+    if _gpu_stats_cache["data"] is not None and now - _gpu_stats_cache["ts"] < 2.0:
+        return _gpu_stats_cache["data"]
+
+    stats = {
+        "metal_active_mb": round(mx.get_active_memory() / 1024 / 1024),
+        "metal_peak_mb": round(mx.get_peak_memory() / 1024 / 1024),
+        "metal_cache_mb": round(mx.get_cache_memory() / 1024 / 1024),
+    }
+
+    # Device info
+    try:
+        info = mx.device_info()
+        stats["device"] = info.get("device_name", "unknown")
+        stats["total_memory_gb"] = round(info.get("memory_size", 0) / 1024**3, 1)
+    except Exception:
+        stats["device"] = "unknown"
+        stats["total_memory_gb"] = 0
+
+    # GPU utilization from ioreg (macOS Apple Silicon)
+    try:
+        result = subprocess.run(
+            ["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"],
+            capture_output=True, text=True, timeout=2,
+        )
+        out = result.stdout
+        m = re.search(r'"Device Utilization %"=(\d+)', out)
+        stats["gpu_utilization"] = int(m.group(1)) if m else 0
+        m = re.search(r'"Renderer Utilization %"=(\d+)', out)
+        stats["renderer_utilization"] = int(m.group(1)) if m else 0
+        m = re.search(r'"In use system memory"=(\d+)', out)
+        if m:
+            stats["gpu_sys_memory_mb"] = round(int(m.group(1)) / 1024 / 1024)
+        m = re.search(r'"Alloc system memory"=(\d+)', out)
+        if m:
+            stats["gpu_alloc_memory_mb"] = round(int(m.group(1)) / 1024 / 1024)
+    except Exception:
+        stats["gpu_utilization"] = 0
+        stats["renderer_utilization"] = 0
+
+    # Local disk usage (root volume)
+    try:
+        du = shutil.disk_usage("/")
+        stats["disk_total_gb"] = round(du.total / 1024**3, 1)
+        stats["disk_free_gb"] = round(du.free / 1024**3, 1)
+        stats["disk_used_gb"] = round(du.used / 1024**3, 1)
+    except Exception:
+        pass
+
+    # USB disk usage (if mounted)
+    usb_path = "/Volumes/One Touch"
+    if os.path.ismount(usb_path):
+        try:
+            du = shutil.disk_usage(usb_path)
+            stats["usb_mounted"] = True
+            stats["usb_total_gb"] = round(du.total / 1024**3, 1)
+            stats["usb_free_gb"] = round(du.free / 1024**3, 1)
+            stats["usb_used_gb"] = round(du.used / 1024**3, 1)
+        except Exception:
+            stats["usb_mounted"] = False
+    else:
+        stats["usb_mounted"] = False
+
+    _gpu_stats_cache["data"] = stats
+    _gpu_stats_cache["ts"] = time.time()
+    return stats
+
+
+@app.get("/api/gpu")
+async def get_gpu_stats():
+    return _get_gpu_stats()
+
+
+# ============================================================
+# Log endpoints
+# ============================================================
+
+from collections import Counter
+from fastapi.responses import StreamingResponse
+import asyncio
+
+@app.get("/api/logs/histogram")
+async def get_log_histogram():
+    """Return log line counts per minute for the last 60 minutes."""
+    now = datetime.now()
+    counts = Counter()
+    if LOG_FILE.exists():
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    # Parse timestamp: "2026-02-09 12:42:21 [INFO] ..."
+                    if len(line) >= 19:
+                        try:
+                            ts = datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+                            diff = (now - ts).total_seconds()
+                            if 0 <= diff < 3600:
+                                minute = int(diff // 60)
+                                counts[minute] = counts.get(minute, 0) + 1
+                        except ValueError:
+                            pass
+        except Exception:
+            pass
+    # Return array of 60 values, index 0 = most recent minute
+    histogram = [counts.get(i, 0) for i in range(60)]
+    return {"histogram": histogram, "total": sum(histogram)}
+
+
+@app.get("/api/logs/stream")
+async def stream_logs():
+    """Stream log file in real-time (tail -f style via SSE)."""
+    async def _generate():
+        # Send last 100 lines first
+        lines = []
+        if LOG_FILE.exists():
+            try:
+                with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+            except Exception:
+                pass
+        for line in lines[-100:]:
+            yield f"data: {json.dumps(line.rstrip())}\n\n"
+        # Then tail for new lines
+        last_pos = LOG_FILE.stat().st_size if LOG_FILE.exists() else 0
+        while True:
+            await asyncio.sleep(1)
+            try:
+                size = LOG_FILE.stat().st_size
+                if size > last_pos:
+                    with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                        f.seek(last_pos)
+                        new_lines = f.readlines()
+                        last_pos = f.tell()
+                    for line in new_lines:
+                        yield f"data: {json.dumps(line.rstrip())}\n\n"
+                elif size < last_pos:
+                    # File was rotated
+                    last_pos = 0
+            except Exception:
+                pass
+
+    return StreamingResponse(_generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ============================================================

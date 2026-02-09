@@ -1,6 +1,6 @@
 # <img src="logo.svg" width="30" height="30" align="top"> MLS
 
-**MLX Local Serving** provides unified local serving for ASR, TTS, Translation, and Image Generation on Apple Silicon. All four models run on Metal GPU via MLX and stay resident in memory.
+**MLX Local Serving** - unified local inference for ASR, TTS, Translation, Image Generation, and Vision on Apple Silicon. All five models run on Metal GPU via MLX and stay resident in memory.
 
 ![screenshot](screenshot.png)
 
@@ -20,10 +20,11 @@ Dashboard at `http://127.0.0.1:18321/history`
 
 | Service | Model | Size |
 |---------|-------|------|
-| ASR | Qwen3-ASR-0.6B-bf16 | 1.2 GB |
+| ASR | Qwen3-ASR-1.7B-8bit | 1.7 GB |
 | TTS | Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16 | 3.6 GB |
 | Translate | TranslateGemma-12B-8bit | 12 GB |
 | Image | Z-Image-Turbo-8bit (mflux) | 10 GB |
+| Vision | jina-vlm-mlx (4-bit) | 2 GB |
 
 ## API
 
@@ -61,6 +62,8 @@ curl -X POST http://127.0.0.1:18321/translate \
 # -> {"data": {"translations": [{"translatedText": "..."}]}}
 ```
 
+Supports 70+ languages. `GET /languages` for the full list.
+
 ### Image Generation
 ```bash
 curl -X POST http://127.0.0.1:18321/api/image/generate \
@@ -69,15 +72,33 @@ curl -X POST http://127.0.0.1:18321/api/image/generate \
 # -> {"image_url": "/image_output/img_xxx.png", "latency_ms": 28000}
 ```
 
+### Vision (Image Understanding)
+```bash
+curl -X POST http://127.0.0.1:18321/api/vision/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"image": "/path/to/image.png", "prompt": "Describe this image.", "max_tokens": 512}'
+# -> {"response": "...", "latency_ms": 2100}
+```
+
+Upload images via `POST /api/vision/upload` (multipart form).
+
+## Dashboard
+
+Three-column layout: sidebar (services, GPU/disk/USB stats, log chart, theme toggle) | history | compose panel.
+
+- Per-service pause/resume/restart controls
+- Calendar-based history navigation with sortable columns
+- Real-time GPU utilization, memory, disk, and USB monitoring
+- Live server log streaming
+- Light/dark/auto theme
+
 ## OpenClaw Integration
 
-The best way to use MLS with OpenClaw is via the included skill. Copy `skills/SKILL.md` to your OpenClaw workspace:
+Copy `skills/SKILL.md` to your OpenClaw workspace:
 
 ```bash
 cp skills/SKILL.md ~/.openclaw/workspace/skills/local-model/SKILL.md
 ```
-
-This gives the agent full API reference for all four services.
 
 For automatic voice message transcription, add the ASR wrapper to `openclaw.json`:
 
