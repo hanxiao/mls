@@ -89,7 +89,7 @@ server_paused = False
 # TTS globals
 # ============================================================
 tts_model = None
-tts_model_name = "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16"
+tts_model_name = "qwen3-tts-1.7B-han"
 tts_model_loading = False
 tts_server_paused = False
 
@@ -98,7 +98,13 @@ AVAILABLE_TTS_MODELS = [
     "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit",
     "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
     "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+    "qwen3-tts-1.7B-han",
 ]
+
+# Han's voice clone model cache
+han_speaker_embedding = None
+han_ref_audio = None
+han_ref_text = None
 
 # Default TTS model path on USB drive
 TTS_MODEL_PATH = "/Volumes/One Touch/ai-models/mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16"
@@ -661,6 +667,7 @@ def load_model(model_name: str = None):
 def load_tts_model(model_name: str = None):
     """Load TTS model."""
     global tts_model, tts_model_name, tts_model_loading
+    global han_speaker_embedding, han_ref_audio, han_ref_text
 
     if model_name:
         tts_model_name = model_name
@@ -670,15 +677,75 @@ def load_tts_model(model_name: str = None):
     start = time.time()
 
     try:
-        # Try USB path first for all models
-        usb_base = "/Volumes/One Touch/ai-models/mlx-community"
-        usb_path = os.path.join(usb_base, tts_model_name.split("/")[-1])
-        if os.path.exists(usb_path):
-            model_path = usb_path
+        # Handle Han's voice clone model
+        if tts_model_name == "qwen3-tts-1.7B-han":
+            # Load the Base model
+            base_model_path = "/Volumes/One Touch/models/Qwen3-TTS-12Hz-1.7B-Base-bf16"
+            if not os.path.exists(base_model_path):
+                raise FileNotFoundError(f"Base model not found: {base_model_path}")
+            
+            logger.info("Loading Base model for Han's voice clone...")
+            tts_model = tts_load_fn(model_path=base_model_path)
+            
+            # Load or extract speaker embedding
+            han_model_dir = "/Volumes/One Touch/models/qwen3-tts-1.7B-han"
+            embedding_cache_path = os.path.join(han_model_dir, "speaker_embedding.npz")
+            ref_audio_path = os.path.join(han_model_dir, "ref_10clips.wav")
+            ref_text_path = os.path.join(han_model_dir, "ref_text.txt")
+            
+            # Try to load cached embedding first
+            if os.path.exists(embedding_cache_path):
+                logger.info("Loading cached speaker embedding...")
+                try:
+                    embedding_data = mx.load(embedding_cache_path)
+                    han_speaker_embedding = embedding_data["embedding"]
+                    logger.info("Cached speaker embedding loaded successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to load cached embedding: {e}, will extract fresh")
+                    han_speaker_embedding = None
+            
+            # Extract embedding if not cached
+            if han_speaker_embedding is None:
+                logger.info("Extracting speaker embedding from reference audio...")
+                from mlx_audio.utils import load_audio
+                
+                # Load reference audio and text
+                han_ref_audio = load_audio(ref_audio_path, sample_rate=24000)
+                with open(ref_text_path, "r", encoding="utf-8") as f:
+                    han_ref_text = f.read().strip()
+                
+                # Extract embedding
+                han_speaker_embedding = tts_model.extract_speaker_embedding(
+                    han_ref_audio, sr=24000
+                )
+                mx.eval(han_speaker_embedding)
+                
+                # Save to cache
+                try:
+                    mx.save_safetensors(
+                        embedding_cache_path,
+                        {"embedding": han_speaker_embedding}
+                    )
+                    logger.info(f"Speaker embedding cached to {embedding_cache_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to cache embedding: {e}")
+            
+            # Load reference audio and text for synthesis
+            if han_ref_audio is None or han_ref_text is None:
+                from mlx_audio.utils import load_audio
+                han_ref_audio = load_audio(ref_audio_path, sample_rate=24000)
+                with open(ref_text_path, "r", encoding="utf-8") as f:
+                    han_ref_text = f.read().strip()
         else:
-            model_path = tts_model_name
+            # Standard model loading
+            usb_base = "/Volumes/One Touch/ai-models/mlx-community"
+            usb_path = os.path.join(usb_base, tts_model_name.split("/")[-1])
+            if os.path.exists(usb_path):
+                model_path = usb_path
+            else:
+                model_path = tts_model_name
 
-        tts_model = tts_load_fn(model_path=model_path)
+            tts_model = tts_load_fn(model_path=model_path)
 
         elapsed = time.time() - start
         logger.info(f"TTS model loaded in {elapsed:.2f}s")
@@ -1131,17 +1198,25 @@ def synthesize(req: SynthesizeRequest):
             verbose=False,
             stt_model=None,
         )
-        # VoiceDesign models require an instruct parameter
-        instruct = req.instruct
-        if not instruct and tts_model_name and "VoiceDesign" in tts_model_name:
-            voice_defaults = {
-                "Chelsie": "A young American female speaker with a clear and friendly voice",
-                "Ethan": "A young American male speaker with a confident and natural voice",
-                "Vivian": "A young Chinese female speaker with a soft and warm voice",
-            }
-            instruct = voice_defaults.get(req.voice, "A young Chinese male speaker with a Beijing accent")
-        if instruct:
-            gen_kwargs["instruct"] = instruct
+        
+        # Handle Han's voice clone model
+        if tts_model_name == "qwen3-tts-1.7B-han":
+            # Use cached ref_audio and ref_text for Han's voice
+            gen_kwargs["ref_audio"] = han_ref_audio
+            gen_kwargs["ref_text"] = han_ref_text
+            # Voice and instruct parameters are ignored for voice cloning
+        else:
+            # VoiceDesign models require an instruct parameter
+            instruct = req.instruct
+            if not instruct and tts_model_name and "VoiceDesign" in tts_model_name:
+                voice_defaults = {
+                    "Chelsie": "A young American female speaker with a clear and friendly voice",
+                    "Ethan": "A young American male speaker with a confident and natural voice",
+                    "Vivian": "A young Chinese female speaker with a soft and warm voice",
+                }
+                instruct = voice_defaults.get(req.voice, "A young Chinese male speaker with a Beijing accent")
+            if instruct:
+                gen_kwargs["instruct"] = instruct
 
         with _gpu_queue():
             generate_audio(**gen_kwargs)
