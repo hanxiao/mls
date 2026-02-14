@@ -35,7 +35,7 @@ from mlx_vlm.utils import load_config as vlm_load_config
 # mflux import stays deferred because it depends on sys.path setup at runtime
 MFLUX_SITE_PACKAGES = os.path.expanduser("~/.local/share/uv/tools/mflux/lib/python3.12/site-packages")
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
@@ -89,7 +89,7 @@ server_paused = False
 # TTS globals
 # ============================================================
 tts_model = None
-tts_model_name = "qwen3-tts-1.7B-han"
+tts_model_name = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
 tts_model_loading = False
 tts_server_paused = False
 
@@ -98,12 +98,12 @@ AVAILABLE_TTS_MODELS = [
     "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit",
     "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
     "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
-    "qwen3-tts-1.7B-han",
 ]
 
 # Han's voice clone model cache
 han_speaker_embedding = None
 han_ref_audio_path = None
+han_ref_audio_array = None  # pre-loaded mx.array to skip disk IO per call
 han_ref_text = None
 
 # Default TTS model path on USB drive
@@ -549,7 +549,8 @@ def _translate_file_worker(src_path: Path, out_path: Path, source: str, target: 
 # ============================================================
 
 class TranscribeRequest(BaseModel):
-    path: str
+    path: str | None = None
+    audio_base64: str | None = None
     language: str = "zh"
 
 
@@ -667,7 +668,7 @@ def load_model(model_name: str = None):
 def load_tts_model(model_name: str = None):
     """Load TTS model."""
     global tts_model, tts_model_name, tts_model_loading
-    global han_speaker_embedding, han_ref_audio_path, han_ref_text
+    global han_speaker_embedding, han_ref_audio_path, han_ref_audio_array, han_ref_text
 
     if model_name:
         tts_model_name = model_name
@@ -678,7 +679,7 @@ def load_tts_model(model_name: str = None):
 
     try:
         # Handle Han's voice clone model
-        if tts_model_name == "qwen3-tts-1.7B-han":
+        if tts_model_name == "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16":
             # Load the Base model
             base_model_path = "/Volumes/One Touch/models/Qwen3-TTS-12Hz-1.7B-Base-bf16"
             if not os.path.exists(base_model_path):
@@ -690,8 +691,8 @@ def load_tts_model(model_name: str = None):
             # Load or extract speaker embedding
             han_model_dir = "/Volumes/One Touch/models/qwen3-tts-1.7B-han"
             embedding_cache_path = os.path.join(han_model_dir, "speaker_embedding.npz")
-            ref_audio_path = os.path.join(han_model_dir, "ref_10clips.wav")
-            ref_text_path = os.path.join(han_model_dir, "ref_text.txt")
+            ref_audio_path = os.path.join(han_model_dir, "ref_30s.wav")
+            ref_text_path = os.path.join(han_model_dir, "ref_text_30s.txt")
             
             # Try to load cached embedding first
             if os.path.exists(embedding_cache_path):
@@ -730,11 +731,22 @@ def load_tts_model(model_name: str = None):
                 except Exception as e:
                     logger.warning(f"Failed to cache embedding: {e}")
             
-            # Store reference file paths for synthesis (generate_audio expects file paths)
+            # Monkey-patch extract_speaker_embedding to return cached embedding
+            _orig_extract = tts_model.extract_speaker_embedding
+            def _cached_extract(audio, sr=24000, _cache=han_speaker_embedding):
+                return _cache
+            tts_model.extract_speaker_embedding = _cached_extract
+            logger.info("Patched extract_speaker_embedding to use cached embedding")
+
+            # Pre-load reference audio as mx.array (skip disk IO per synthesis call)
             han_ref_audio_path = ref_audio_path
             if han_ref_text is None:
                 with open(ref_text_path, "r", encoding="utf-8") as f:
                     han_ref_text = f.read().strip()
+            from mlx_audio.utils import load_audio as _load_audio
+            han_ref_audio_array = _load_audio(ref_audio_path, sample_rate=24000)
+            mx.eval(han_ref_audio_array)
+            logger.info("Pre-loaded ref audio array for Han voice clone")
         else:
             # Standard model loading
             usb_base = "/Volumes/One Touch/ai-models/mlx-community"
@@ -859,7 +871,7 @@ def convert_wav_to_ogg(wav_path: str, ogg_path: str) -> bool:
     """Convert WAV to OGG Opus using ffmpeg. Returns True on success."""
     try:
         result = subprocess.run(
-            ["ffmpeg", "-y", "-i", wav_path, "-c:a", "libopus", "-b:a", "48k", ogg_path],
+            ["ffmpeg", "-y", "-i", wav_path, "-af", "adelay=100|100,apad=pad_dur=100ms", "-c:a", "libopus", "-b:a", "48k", ogg_path],
             capture_output=True, text=True, timeout=60
         )
         return result.returncode == 0
@@ -952,22 +964,22 @@ async def switch_model(req: SwitchModelRequest):
     return {"status": "switched", "model": current_model_name}
 
 
-@app.post("/transcribe", response_model=TranscribeResponse)
-def transcribe(req: TranscribeRequest):
+def _transcribe_audio(audio_path: str, language: str = "zh") -> TranscribeResponse:
+    """Core transcription logic. audio_path must exist on disk."""
     global model
 
     if server_paused:
         raise HTTPException(status_code=503, detail="Server is paused")
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    if not os.path.exists(req.path):
-        raise HTTPException(status_code=400, detail=f"Audio file not found: {req.path}")
+    if not os.path.exists(audio_path):
+        raise HTTPException(status_code=400, detail=f"Audio file not found: {audio_path}")
 
     start = time.time()
     wav_path = None
     txt_file = None
     try:
-        wav_path = convert_to_wav(req.path)
+        wav_path = convert_to_wav(audio_path)
 
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
             output_path = f.name.replace(".txt", "")
@@ -980,7 +992,7 @@ def transcribe(req: TranscribeRequest):
                 output_path=output_path,
                 format="txt",
                 verbose=False,
-                language=req.language or "zh"
+                language=language or "zh"
             )
             _maybe_clear_gpu_cache()
 
@@ -1005,13 +1017,50 @@ def transcribe(req: TranscribeRequest):
             os.unlink(txt_file)
 
     latency_ms = (time.time() - start) * 1000
-    audio_duration_ms = get_audio_duration(req.path)
+    audio_duration_ms = get_audio_duration(audio_path)
 
     if text:
-        save_to_history(req.path, text, latency_ms, audio_duration_ms, current_model_name)
+        save_to_history(audio_path, text, latency_ms, audio_duration_ms, current_model_name)
 
-    logger.info(f"ASR: {Path(req.path).name}, {len(text)}ch, {latency_ms:.0f}ms, audio={audio_duration_ms:.0f}ms")
+    logger.info(f"ASR: {Path(audio_path).name}, {len(text)}ch, {latency_ms:.0f}ms, audio={audio_duration_ms:.0f}ms")
     return TranscribeResponse(text=text, latency_ms=latency_ms)
+
+
+@app.post("/transcribe")
+async def transcribe(request: Request):
+    """Transcribe audio. Accepts JSON (path or audio_base64) or multipart file upload."""
+    content_type = request.headers.get("content-type", "")
+    tmp_path = None
+    try:
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            file = form.get("file")
+            language = form.get("language", "zh")
+            if file is None:
+                raise HTTPException(status_code=400, detail="Missing 'file' in multipart upload")
+            suffix = Path(file.filename).suffix if file.filename else ".ogg"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                f.write(await file.read())
+                tmp_path = f.name
+            return _transcribe_audio(tmp_path, language)
+        else:
+            body = await request.json()
+            path = body.get("path")
+            audio_base64 = body.get("audio_base64")
+            language = body.get("language", "zh")
+            if path:
+                return _transcribe_audio(path, language)
+            elif audio_base64:
+                audio_bytes = base64.b64decode(audio_base64)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                    f.write(audio_bytes)
+                    tmp_path = f.name
+                return _transcribe_audio(tmp_path, language)
+            else:
+                raise HTTPException(status_code=400, detail="Either 'path' or 'audio_base64' is required")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 @app.get("/api/dates")
@@ -1198,12 +1247,30 @@ def synthesize(req: SynthesizeRequest):
             stt_model=None,
         )
         
-        # Handle Han's voice clone model
-        if tts_model_name == "qwen3-tts-1.7B-han":
-            # Use ref_audio path and ref_text for Han's voice (generate_audio expects file path)
-            gen_kwargs["ref_audio"] = han_ref_audio_path
-            gen_kwargs["ref_text"] = han_ref_text
-            # Voice and instruct parameters are ignored for voice cloning
+        # Handle Han's voice clone model - direct model.generate() path (skip generate_audio overhead)
+        if tts_model_name == "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16":
+            import numpy as np
+            import soundfile as sf
+
+            with _gpu_queue():
+                audio_chunks = []
+                for result in tts_model.generate(
+                    text=req.text,
+                    lang_code=lang_code,
+                    ref_audio=han_ref_audio_array,
+                    ref_text=han_ref_text,
+                    verbose=False,
+                ):
+                    if result.audio is not None:
+                        audio_chunks.append(np.array(result.audio))
+                _maybe_clear_gpu_cache()
+
+            if not audio_chunks:
+                raise HTTPException(status_code=500, detail="Audio generation failed - no output")
+
+            full_audio = np.concatenate(audio_chunks)
+            sf.write(str(output_file), full_audio, 24000)
+            actual_file = output_file
         else:
             # VoiceDesign models require an instruct parameter
             instruct = req.instruct
@@ -1217,24 +1284,24 @@ def synthesize(req: SynthesizeRequest):
             if instruct:
                 gen_kwargs["instruct"] = instruct
 
-        with _gpu_queue():
-            generate_audio(**gen_kwargs)
-            _maybe_clear_gpu_cache()
+            with _gpu_queue():
+                generate_audio(**gen_kwargs)
+                _maybe_clear_gpu_cache()
 
-        actual_file = None
-        for candidate in [
-            TTS_OUTPUT_DIR / f"{file_prefix}.wav",
-            TTS_OUTPUT_DIR / f"{file_prefix}_000.wav",
-        ]:
-            if candidate.exists():
-                actual_file = candidate
-                break
-
-        if actual_file is None:
-            for f in TTS_OUTPUT_DIR.iterdir():
-                if f.name.startswith(file_prefix) and f.suffix == ".wav":
-                    actual_file = f
+            actual_file = None
+            for candidate in [
+                TTS_OUTPUT_DIR / f"{file_prefix}.wav",
+                TTS_OUTPUT_DIR / f"{file_prefix}_000.wav",
+            ]:
+                if candidate.exists():
+                    actual_file = candidate
                     break
+
+            if actual_file is None:
+                for f in TTS_OUTPUT_DIR.iterdir():
+                    if f.name.startswith(file_prefix) and f.suffix == ".wav":
+                        actual_file = f
+                        break
 
         if actual_file is None:
             raise HTTPException(status_code=500, detail="Audio generation failed - no output file")
