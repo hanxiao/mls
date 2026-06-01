@@ -197,7 +197,27 @@ mls exposes an OpenAI-compatible embeddings endpoint that OpenClaw can use as it
 }
 ```
 
-Switching embedders requires a memory reindex. Set `dimensions` on the request for Matryoshka truncation (32, 64, 128, 256, 512, 1024) if you want smaller vectors.
+Steps:
+
+1. Start mls and confirm the endpoint is live (OpenClaw memory will fail with 503 if it points at a server that is not running):
+
+   ```bash
+   uv run bin/server.py   # or let gateway-loop.sh auto-start it
+   curl -s -X POST http://127.0.0.1:18321/v1/embeddings \
+     -H "Content-Type: application/json" \
+     -d '{"input": "hello", "model": "jina-embeddings-v5-omni-small", "input_type": "retrieval.query"}'
+   ```
+
+2. Apply the `memorySearch` block above to `~/.openclaw/openclaw.json`.
+
+3. Reindex, since vector dimensions change with the embedder (jina-v5-omni is 1024):
+
+   ```bash
+   openclaw memory index --force
+   openclaw memory status        # verify provider + index
+   ```
+
+`queryInputType`/`documentInputType` map to the model's asymmetric retrieval prefixes. Set `dimensions` on the request for Matryoshka truncation (32, 64, 128, 256, 512, 1024) if you want smaller vectors.
 
 ## Requirements
 
