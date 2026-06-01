@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MLS - MLX Serving</title>
-    <meta name="description" content="Local ML inference dashboard: ASR, TTS, Translation, Image Generation, Vision - powered by MLX on Apple Silicon.">
+    <meta name="description" content="Local ML inference dashboard: ASR, TTS, Translation, Image Generation, Vision, Embedding - powered by MLX on Apple Silicon.">
     <meta property="og:title" content="MLS - MLX Serving">
-    <meta property="og:description" content="Local ML inference dashboard: ASR, TTS, Translation, Image Generation, Vision - powered by MLX on Apple Silicon.">
+    <meta property="og:description" content="Local ML inference dashboard: ASR, TTS, Translation, Image Generation, Vision, Embedding - powered by MLX on Apple Silicon.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://github.com/hanxiao/mls">
     <meta name="twitter:card" content="summary">
@@ -224,7 +224,7 @@
         /* Panels */
         .tts-panel { display: none; } .tts-panel.active { display: block; }
         .asr-panel { display: block; } .translate-panel { display: none; }
-        .image-panel { display: none; } .vision-panel { display: none; } .log-panel { display: none; }
+        .image-panel { display: none; } .vision-panel { display: none; } .embed-panel { display: none; } .log-panel { display: none; }
 
         /* Compose panel (right column) */
         .compose-panel { width: 350px; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; transition: background 0.2s; }
@@ -279,6 +279,16 @@
         .translate-arrow { color: var(--text-3); font-size: 11px; }
         .translate-source-text { font-size: 13px; line-height: 1.5; color: var(--text-2); margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border-light); }
         .translate-result-text { font-size: 15px; line-height: 1.6; color: var(--text); }
+        /* Embed history */
+        .embed-item { background: var(--surface); border: 1px solid var(--border); padding: 16px 20px; margin-bottom: 12px; transition: border-color 0.15s; border-radius: 3px; }
+        .embed-item:hover { border-color: var(--accent); }
+        .embed-badge { color: var(--text-2); font-size: 10px; padding: 2px 6px; background: var(--badge-purple); border-radius: 3px; }
+        .embed-dim-badge { color: var(--text-3); font-size: 10px; }
+        .embed-preview-text { font-size: 13px; line-height: 1.5; color: var(--text-2); margin-top: 8px; white-space: pre-wrap; word-break: break-word; }
+        .embed-preview-more { font-size: 11px; color: var(--text-3); margin-top: 4px; }
+        .embed-vector { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-3); margin-top: 8px; padding: 8px; background: var(--surface-alt); border-radius: 3px; word-break: break-all; line-height: 1.5; }
+        .embed-result-box { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+        .embed-result-meta { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
 
         /* Image panel */
         .image-result { margin-top: 20px; text-align: center; border-top: 1px solid var(--border-light); padding-top: 20px; }
@@ -409,6 +419,25 @@
                         <div class="svc-stats">
                             <div>total: <span id="vision-stat-total">-</span></div>
                             <div>today: <span id="vision-stat-today">-</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Embed row -->
+                <div class="service-row" id="svc-row-embed" onclick="onServiceRowClick(event, 'embed')">
+                    <div class="service-row-header">
+                        <div class="status-dot loading" id="embed-status-dot"></div>
+                        <span class="service-row-name">Embed</span>
+                        <span class="svc-header-actions" onclick="event.stopPropagation()">
+                            <button class="icon-btn" id="embed-btn-pause" onclick="toggleEmbedPause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="3" y1="2" x2="3" y2="8"/><line x1="7" y1="2" x2="7" y2="8"/></svg></button>
+                            <button class="icon-btn" id="embed-btn-restart" onclick="restartEmbedModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 5a3.5 3.5 0 1 1-3.5-3.5"/><polyline points="3.5,0 5,1.5 3.5,3"/></svg></button>
+                        </span>
+                    </div>
+                    <div class="service-row-model" id="svc-model-short-embed">loading...</div>
+                    <div class="service-row-details" onclick="event.stopPropagation()">
+                        <div class="svc-stats">
+                            <div>total: <span id="embed-stat-total">-</span></div>
+                            <div>today: <span id="embed-stat-today">-</span></div>
                         </div>
                     </div>
                 </div>
@@ -576,6 +605,21 @@
                 <div id="vision-history"><div class="empty">no vision history yet</div></div>
             </div>
 
+            <!-- Embed panel (history only) -->
+            <div class="main-content embed-panel" id="embed-panel">
+                <div class="header">
+                    <h2>Embedding History</h2>
+                    <div class="header-controls">
+                        <div class="sort-controls">
+                            <span class="sort-label">sort:</span>
+                            <button class="sort-btn active" onclick="setHistorySort('embed','time',this)">time <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                            <button class="sort-btn" onclick="setHistorySort('embed','latency',this)">latency <svg class="sort-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg></button>
+                        </div>
+                    </div>
+                </div>
+                <div id="embed-history"><div class="empty">no embedding history yet</div></div>
+            </div>
+
             <!-- Log panel -->
             <div class="main-content log-panel" id="log-panel">
                 <div class="header">
@@ -717,6 +761,38 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Embed compose -->
+                <div class="compose-content" id="compose-embed">
+                    <div class="translate-compose">
+                        <textarea class="tts-textarea" id="embed-text" placeholder="Enter text to embed..."></textarea>
+                        <div class="tts-controls">
+                            <select class="translate-select" id="embed-task">
+                                <option value="retrieval.passage">retrieval.passage</option>
+                                <option value="retrieval.query">retrieval.query</option>
+                                <option value="text-matching">text-matching</option>
+                                <option value="classification">classification</option>
+                                <option value="clustering">clustering</option>
+                            </select>
+                            <select class="translate-select" id="embed-dim">
+                                <option value="">full (1024)</option>
+                                <option value="512">512</option>
+                                <option value="256">256</option>
+                                <option value="128">128</option>
+                                <option value="64">64</option>
+                                <option value="32">32</option>
+                            </select>
+                            <button class="synthesize-btn" id="embed-btn" onclick="doEmbed()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6"/><path d="m4.2 4.2 4.3 4.3m7 7 4.3 4.3"/><path d="M1 12h6m6 0h6"/></svg>
+                                <span id="embed-btn-text">Embed</span>
+                            </button>
+                        </div>
+                        <div class="embed-result-box" id="embed-result" style="display:none;">
+                            <div class="embed-result-meta" id="embed-result-meta"></div>
+                            <div class="embed-vector" id="embed-result-vector"></div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -729,10 +805,11 @@
             tts: { field: 'time', ascending: false },
             translate: { field: 'time', ascending: false },
             image: { field: 'time', ascending: false },
-            vision: { field: 'time', ascending: false }
+            vision: { field: 'time', ascending: false },
+            embed: { field: 'time', ascending: false }
         };
-        let _lastHistoryData = { tts: [], translate: [], image: [], vision: [] };
-        let _prevHistoryCounts = { asr: -1, tts: -1, translate: -1, image: -1, vision: -1 };
+        let _lastHistoryData = { tts: [], translate: [], image: [], vision: [], embed: [] };
+        let _prevHistoryCounts = { asr: -1, tts: -1, translate: -1, image: -1, vision: -1, embed: -1 };
         const _failedImages = new Set();
 
         function flashServiceRow(service) {
@@ -762,6 +839,7 @@
             else if (service === 'translate') renderTranslateHistory(sorted);
             else if (service === 'image') renderImageHistory(sorted);
             else if (service === 'vision') renderVisionHistory(sorted);
+            else if (service === 'embed') renderEmbedHistory(sorted);
         }
 
         function setHistorySort(service, sortBy, btn) {
@@ -817,6 +895,10 @@
         let visionPaused = false;
         let visionUploadedPath = null;
 
+        // ========== Embed state ==========
+        let embedCurrentDate = null;
+        let embedPaused = false;
+
         // ========== Tab switching ==========
         // ========== Mini Calendar ==========
         let calYear, calMonth; // 0-indexed month
@@ -865,7 +947,8 @@
                                  (currentTab === 'tts' && dateStr === ttsCurrentDate) ||
                                  (currentTab === 'translate' && dateStr === translateCurrentDate) ||
                                  (currentTab === 'image' && dateStr === imageCurrentDate) ||
-                                 (currentTab === 'vision' && dateStr === visionCurrentDate);
+                                 (currentTab === 'vision' && dateStr === visionCurrentDate) ||
+                                 (currentTab === 'embed' && dateStr === embedCurrentDate);
                 const isToday = dateStr === today;
                 let cls = 'cal-day';
                 if (hasData) cls += ' has-data';
@@ -893,6 +976,9 @@
             } else if (currentTab === 'vision') {
                 visionCurrentDate = dateStr;
                 loadVisionHistoryForDate(dateStr);
+            } else if (currentTab === 'embed') {
+                embedCurrentDate = dateStr;
+                loadEmbedHistoryForDate(dateStr);
             }
             renderCalendar();
         }
@@ -919,6 +1005,10 @@
                     const res = await fetch('/api/vision/history');
                     const data = await res.json();
                     calAvailableDates.vision = new Set(data.map(r => r.date));
+                } else if (service === 'embed') {
+                    const res = await fetch('/api/embed/history');
+                    const data = await res.json();
+                    calAvailableDates.embed = new Set(data.map(r => r.date));
                 }
             } catch(e) {
                 calAvailableDates[service] = new Set();
@@ -930,7 +1020,8 @@
                 const currentDateVar = service === 'tts' ? ttsCurrentDate
                     : service === 'translate' ? translateCurrentDate
                     : service === 'image' ? imageCurrentDate
-                    : visionCurrentDate;
+                    : service === 'vision' ? visionCurrentDate
+                    : embedCurrentDate;
                 if (!currentDateVar && dates.has(today)) {
                     calSelectDate(today);
                     return; // calSelectDate calls renderCalendar
@@ -940,13 +1031,13 @@
         }
 
         let composePanelOpen = true;
-        const composeTitles = { tts: 'Synthesize', translate: 'Translate', image: 'Generate', vision: 'Analyze' };
+        const composeTitles = { tts: 'Synthesize', translate: 'Translate', image: 'Generate', vision: 'Analyze', embed: 'Embed' };
 
         function switchTab(tab) {
             currentTab = tab;
 
             // Update service row active state
-            ['asr', 'tts', 'translate', 'image', 'vision'].forEach(t => {
+            ['asr', 'tts', 'translate', 'image', 'vision', 'embed'].forEach(t => {
                 const row = document.getElementById('svc-row-' + t);
                 if (row) row.classList.toggle('active', t === tab);
             });
@@ -959,6 +1050,7 @@
             document.getElementById('translate-panel').style.display = tab === 'translate' ? 'block' : 'none';
             document.getElementById('image-panel').style.display = tab === 'image' ? 'block' : 'none';
             document.getElementById('vision-panel').style.display = tab === 'vision' ? 'block' : 'none';
+            document.getElementById('embed-panel').style.display = tab === 'embed' ? 'block' : 'none';
             document.getElementById('log-panel').style.display = tab === 'log' ? 'flex' : 'none';
 
             // Log streaming: connect when active, disconnect when leaving
@@ -969,7 +1061,7 @@
             }
 
             // Update compose panel
-            const hasCompose = ['tts', 'translate', 'image', 'vision'].includes(tab);
+            const hasCompose = ['tts', 'translate', 'image', 'vision', 'embed'].includes(tab);
             const panel = document.getElementById('compose-panel');
             const handle = document.getElementById('resize-handle');
             const openBtn = document.getElementById('compose-open-strip');
@@ -1017,6 +1109,11 @@
                 loadVisionStatus();
                 loadVisionHistory();
                 updateVisionStats();
+            }
+            if (tab === 'embed') {
+                loadEmbedStatus();
+                loadEmbedHistory();
+                updateEmbedStats();
             }
         }
 
@@ -2115,6 +2212,126 @@
                 });
         }
 
+        // ========== Embed functions ==========
+        async function loadEmbedStatus() {
+            const res = await fetch('/api/embed/status');
+            const status = await res.json();
+            const dot = document.getElementById('embed-status-dot');
+            dot.className = 'status-dot';
+            if (status.loaded) {
+                // green
+            } else if (status.loading) {
+                dot.classList.add('loading');
+            } else {
+                dot.classList.add('error');
+            }
+            document.getElementById('svc-model-short-embed').textContent =
+                status.loaded ? status.model_short : 'loading...';
+        }
+
+        async function doEmbed() {
+            const text = document.getElementById('embed-text').value;
+            const inputType = document.getElementById('embed-task').value;
+            const dimVal = document.getElementById('embed-dim').value;
+            const btn = document.getElementById('embed-btn');
+            const btnText = document.getElementById('embed-btn-text');
+            const resultBox = document.getElementById('embed-result');
+
+            if (!text.trim()) return;
+
+            btn.disabled = true;
+            btnText.textContent = 'Embedding...';
+
+            try {
+                const body = { input: text, model: 'jina-embeddings-v5-omni-small', input_type: inputType };
+                if (dimVal) body.dimensions = parseInt(dimVal);
+                const res = await fetch('/v1/embeddings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+                if (!res.ok) throw new Error(await res.text());
+                const data = await res.json();
+                const vec = data.data[0].embedding;
+                const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0));
+                const head = vec.slice(0, 12).map(v => v.toFixed(4)).join(', ');
+                document.getElementById('embed-result-meta').textContent =
+                    'dim ' + vec.length + '  |  norm ' + norm.toFixed(3) + '  |  ' + inputType;
+                document.getElementById('embed-result-vector').textContent = '[' + head + ', ...]';
+                resultBox.style.display = 'block';
+                loadEmbedHistory();
+                updateEmbedStats();
+            } catch(e) {
+                alert('Embed failed: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btnText.textContent = 'Embed';
+            }
+        }
+
+        async function loadEmbedHistory() {
+            const res = await fetch('/api/embed/history');
+            const records = await res.json();
+            if (records.length > _prevHistoryCounts.embed && _prevHistoryCounts.embed >= 0) flashServiceRow('embed');
+            _prevHistoryCounts.embed = records.length;
+            _lastHistoryData.embed = records;
+            renderEmbedHistory(sortHistoryRecords(records, historySortState.embed.field, historySortState.embed.ascending));
+        }
+
+        async function loadEmbedHistoryForDate(date) {
+            const res = await fetch('/api/embed/history');
+            let records = await res.json();
+            records = records.filter(r => r.timestamp.startsWith(date));
+            _lastHistoryData.embed = records;
+            renderEmbedHistory(sortHistoryRecords(records, historySortState.embed.field, historySortState.embed.ascending));
+        }
+
+        function renderEmbedHistory(records) {
+            const container = document.getElementById('embed-history');
+            if (!records.length) {
+                container.innerHTML = '<div class="empty">no embedding history</div>';
+                return;
+            }
+
+            container.innerHTML = records.map(r => {
+                const time = new Date(r.timestamp).toLocaleTimeString();
+                const latency = (r.latency_ms / 1000).toFixed(2);
+                const preview = r.preview || [];
+                const nTexts = r.n_texts || preview.length;
+                const first = preview.length ? escapeHtml(preview[0]) : '<span style="color:var(--text-3)">(no preview)</span>';
+                const more = nTexts > 1 ? '<div class="embed-preview-more">+ ' + (nTexts - 1) + ' more input(s)</div>' : '';
+                const task = r.input_type || r.task || '';
+                return '<div class="embed-item">' +
+                    '<div class="transcript-header">' +
+                        '<span class="transcript-time">' + time + '</span>' +
+                        '<span class="embed-badge">' + escapeHtml(task) + '</span>' +
+                        '<span class="embed-dim-badge">' + (r.dims || '?') + 'd</span>' +
+                        '<span class="embed-dim-badge">' + (r.chars || 0) + ' chars</span>' +
+                        '<span class="transcript-latency">' + CLOCK_ICON + latency + 's</span>' +
+                    '</div>' +
+                    '<div class="embed-preview-text">' + first + '</div>' + more +
+                '</div>';
+            }).join('');
+        }
+
+        function toggleEmbedPause() {
+            const action = embedPaused ? 'resume' : 'pause';
+            fetch('/api/embed/server/' + action, {method: 'POST'})
+                .then(() => {
+                    embedPaused = !embedPaused;
+                    loadEmbedStatus();
+                });
+        }
+
+        function restartEmbedModel() {
+            fetch('/api/embed/server/restart', {method: 'POST'})
+                .then(res => res.json())
+                .then(data => {
+                    alert('Embedding model restarted');
+                    loadEmbedStatus();
+                });
+        }
+
         // ========== Stats helpers ==========
         async function updateTTSStats() {
             try {
@@ -2164,6 +2381,17 @@
             } catch(e) {}
         }
 
+        async function updateEmbedStats() {
+            try {
+                const res = await fetch('/api/embed/history');
+                const records = await res.json();
+                const today = getLocalToday();
+                const todayRecords = records.filter(r => r.timestamp && r.timestamp.startsWith(today));
+                document.getElementById('embed-stat-total').textContent = records.length + ' items';
+                document.getElementById('embed-stat-today').textContent = todayRecords.length + ' items';
+            } catch(e) {}
+        }
+
         // Update a service dot: green=loaded, yellow=loading, red=not loaded
         function updateDot(dotId, loaded, loading) {
             const dot = document.getElementById(dotId);
@@ -2209,8 +2437,14 @@
                 document.getElementById('svc-model-short-vision').textContent =
                     health.vision_loaded ? health.vision_model.split('/').pop() : 'loading...';
 
+                // Embed
+                updateDot('embed-status-dot', health.embedding_loaded, !health.embedding_loaded);
+                document.getElementById('svc-model-short-embed').textContent =
+                    health.embedding_loaded ? health.embedding_model.split('/').pop() : 'loading...';
+
                 _allModelsReady = health.loaded && health.tts_loaded
-                    && health.translate_loaded && health.image_loaded && health.vision_loaded;
+                    && health.translate_loaded && health.image_loaded && health.vision_loaded
+                    && health.embedding_loaded;
 
                 // Populate ASR model selector once loaded
                 if (health.loaded) {
@@ -2224,7 +2458,7 @@
                 }
             } catch(e) {
                 // Server not up yet - mark everything as loading
-                ['status-dot', 'tts-status-dot', 'translate-status-dot', 'image-status-dot', 'vision-status-dot'].forEach(id => {
+                ['status-dot', 'tts-status-dot', 'translate-status-dot', 'image-status-dot', 'vision-status-dot', 'embed-status-dot'].forEach(id => {
                     updateDot(id, false, true);
                 });
             }
@@ -2234,6 +2468,7 @@
             updateTranslateStats();
             updateImageStats();
             updateVisionStats();
+            updateEmbedStats();
         }
 
         // ========== GPU stats ==========
@@ -2430,12 +2665,14 @@
             loadTranslateHistory();
             loadImageHistory();
             loadVisionHistory();
+            loadEmbedHistory();
             // Update stats for active tab
             const activeTab = document.querySelector('.service-row.active')?.id?.replace('svc-row-', '');
             if (activeTab === 'tts') updateTTSStats();
             else if (activeTab === 'translate') updateTranslateStats();
             else if (activeTab === 'image') updateImageStats();
             else if (activeTab === 'vision') updateVisionStats();
+            else if (activeTab === 'embed') updateEmbedStats();
         }, 3000);
 
         // Uptime ticker (1s)

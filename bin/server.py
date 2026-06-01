@@ -31,6 +31,13 @@ from mlx_vlm import load as vlm_load, generate as vlm_generate
 from mlx_vlm.prompt_utils import apply_chat_template
 from mlx_vlm.utils import load_config as vlm_load_config
 
+# Embedding engine lives in sibling bin/embeddings.py. server.py runs as a script
+# (uv run bin/server.py), so its own dir is sys.path[0]; insert explicitly to be safe.
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+from embeddings import (
+    EmbeddingEngine, load_engine, DEFAULT_EMBED_MODEL_ID, MATRYOSHKA_DIMS, resolve_task,
+)
+
 # mflux site-packages path (installed in separate uv tool venv, added to sys.path at load time)
 # mflux import stays deferred because it depends on sys.path setup at runtime
 MFLUX_SITE_PACKAGES = os.path.expanduser("~/.local/share/uv/tools/mflux/lib/python3.12/site-packages")
@@ -151,6 +158,15 @@ vision_model_loading = False
 vision_server_paused = False
 VISION_MODEL_PATH = "/Volumes/One Touch/ai-models/jinaai/jina-vlm-mlx"
 
+# ============================================================
+# Embedding globals
+# ============================================================
+embedding_model = None  # EmbeddingEngine or None
+embedding_model_name = "jinaai/jina-embeddings-v5-omni-small-mlx"
+embedding_model_loading = False
+embedding_server_paused = False
+EMBEDDING_MODEL_PATH = "/Volumes/One Touch/ai-models/huggingface/hub/models--jinaai--jina-embeddings-v5-omni-small-mlx/snapshots/716c5b684db3f6ba574dd9b4f6b14af3b2eb8bda"
+
 # Single lock for ALL GPU inference - MLX Metal cannot handle concurrent GPU access.
 # Separate per-service locks allowed ASR+TTS+Translate+Image to hit the GPU
 # simultaneously, causing Metal OOM crashes.
@@ -260,6 +276,7 @@ async def lifespan(app):
         (load_translate_model, "Translate"),
         (load_image_model, "Image"),
         (load_vision_model, "Vision"),
+        (load_embedding_model, "Embedding"),
     ]
     threads = []
     for fn, name in loaders:
@@ -304,6 +321,7 @@ _INFERENCE_PATHS = {
     "/transcribe", "/synthesize", "/synthesize_file",
     "/translate", "/api/image/generate",
     "/v1/chat/completions", "/api/vision/analyze",
+    "/v1/embeddings", "/embed",
 }
 
 @app.middleware("http")
@@ -476,6 +494,39 @@ def save_vision_history(prompt: str, image_path: str, response_text: str,
 
 
 # ============================================================
+# Embedding helpers
+# ============================================================
+
+def save_embed_history(texts: list[str], task: str, dims: int, latency_ms: float,
+                       model_name: str, input_type: str | None = None):
+    """Save embedding request to history. Stores a short text preview, never raw vectors."""
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    day_dir = HISTORY_DIR / date_str
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    # Preview the first few inputs (truncated) so the dashboard can show what was embedded.
+    preview = [t[:280] for t in texts[:5]]
+    total_chars = sum(len(t) for t in texts)
+
+    record = {
+        "type": "embed",
+        "timestamp": now.isoformat(),
+        "n_texts": len(texts),
+        "task": task,
+        "input_type": input_type,
+        "dims": dims,
+        "chars": total_chars,
+        "preview": preview,
+        "latency_ms": round(latency_ms, 2),
+        "model": model_name.split("/")[-1],
+    }
+    jsonl_path = day_dir / "embed_history.jsonl"
+    with open(jsonl_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+# ============================================================
 # Translate helpers
 # ============================================================
 
@@ -621,6 +672,18 @@ class VisionRequest(BaseModel):
 
 
 # ============================================================
+# OpenAI-compatible Embedding models
+# ============================================================
+
+class EmbeddingRequest(BaseModel):
+    input: str | list[str]
+    model: str = "jina-embeddings-v5-omni-small"
+    input_type: str | None = None
+    dimensions: int | None = None
+    encoding_format: str | None = None
+
+
+# ============================================================
 # OpenAI-compatible Chat Completion models
 # ============================================================
 
@@ -631,7 +694,7 @@ class ChatImageUrl(BaseModel):
 class ChatContentPart(BaseModel):
     type: str  # "text" or "image_url"
     text: str | None = None
-    image_url: ChatImageUrl | None = None
+    image_url: ChatImageUrl | str | None = None
 
 class ChatMessage(BaseModel):
     role: str
@@ -867,6 +930,31 @@ def load_vision_model():
         vision_model_loading = False
 
 
+def load_embedding_model():
+    """Load jina-embeddings-v5-omni text embedding engine."""
+    global embedding_model, embedding_model_loading
+
+    if not os.path.isdir(EMBEDDING_MODEL_PATH):
+        logger.warning(f"Embedding model not available (USB not mounted?): {EMBEDDING_MODEL_PATH}")
+        return
+
+    embedding_model_loading = True
+    logger.info(f"Loading embedding model from {EMBEDDING_MODEL_PATH}...")
+    start = time.time()
+
+    try:
+        # EMBEDDING_MODEL_PATH is an already-resolved model dir; load it directly.
+        # (load_engine() expects a repo id and would re-resolve the path, failing.)
+        embedding_model = EmbeddingEngine(EMBEDDING_MODEL_PATH)
+        elapsed = time.time() - start
+        logger.info(f"Embedding model loaded in {elapsed:.2f}s (dim={embedding_model.dim})")
+    except Exception as e:
+        logger.error(f"Failed to load embedding model: {e}")
+        embedding_model = None
+    finally:
+        embedding_model_loading = False
+
+
 def convert_wav_to_ogg(wav_path: str, ogg_path: str) -> bool:
     """Convert WAV to OGG Opus using ffmpeg. Returns True on success."""
     try:
@@ -911,6 +999,8 @@ async def health():
         "image_loaded": image_model is not None,
         "vision_model": vision_model_name,
         "vision_loaded": vision_model is not None,
+        "embedding_model": embedding_model_name,
+        "embedding_loaded": embedding_model is not None and embedding_model.loaded,
     }
 
 
@@ -1835,34 +1925,86 @@ async def get_image_history():
 # OpenAI-compatible Chat Completions API
 # ============================================================
 
+# --- PDF rasterization (added for PDF OCR support) ---
+# scale is a multiplier of the PDF's native 72 DPI, so 2.0 ~= 144 DPI. Bump
+# MLS_PDF_RENDER_SCALE if OCR of dense/small text is poor; lower it if pages
+# render too large/slow. These are sane defaults, tune against real documents.
+PDF_RENDER_SCALE = float(os.environ.get("MLS_PDF_RENDER_SCALE", "2.0"))
+PDF_MAX_PAGES = int(os.environ.get("MLS_PDF_MAX_PAGES", "50"))
+
+
+def _is_pdf(path: str) -> bool:
+    """True if the file is a PDF (by .pdf extension or %PDF- magic bytes)."""
+    try:
+        if str(path).lower().endswith(".pdf"):
+            return True
+        with open(path, "rb") as fh:
+            return fh.read(5) == b"%PDF-"
+    except Exception:
+        return False
+
+
+def _rasterize_pdf(path: str) -> list[str]:
+    """Render each PDF page to a PNG under VISION_OUTPUT_DIR; return page PNG paths."""
+    import pypdfium2 as pdfium
+    VISION_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    pdf = pdfium.PdfDocument(path)
+    pages: list[str] = []
+    try:
+        total = len(pdf)
+        if total > PDF_MAX_PAGES:
+            logger.warning(f"[vision] PDF has {total} pages; capping at {PDF_MAX_PAGES}")
+        for i in range(min(total, PDF_MAX_PAGES)):
+            pil = pdf[i].render(scale=PDF_RENDER_SCALE).to_pil()
+            if pil.mode != "RGB":
+                pil = pil.convert("RGB")
+            dest = VISION_OUTPUT_DIR / f"vision_{uuid.uuid4().hex[:12]}_p{i + 1}.png"
+            pil.save(str(dest))
+            pages.append(str(dest))
+    finally:
+        pdf.close()
+    return pages
+
+
 def _resolve_base64_image(data_uri: str) -> str:
-    """Decode a data:image/...;base64,... URI to a temp file. Returns file path."""
-    # Format: data:image/png;base64,iVBOR...
+    """Decode a data:...;base64,... URI (or raw base64) to a file under VISION_OUTPUT_DIR.
+
+    Chooses a .pdf extension for PDF payloads (declared application/pdf mime or
+    %PDF magic); otherwise an image extension inferred from the mime type.
+    Returns the file path.
+    """
     header, _, b64data = data_uri.partition(",")
     if not b64data:
-        raise ValueError("Invalid data URI: no base64 data after comma")
-    # Extract extension from mime type
-    ext = ".png"
-    if "image/" in header:
-        mime = header.split("image/")[1].split(";")[0]
-        ext_map = {"png": ".png", "jpeg": ".jpg", "jpg": ".jpg", "gif": ".gif",
-                    "webp": ".webp", "bmp": ".bmp", "tiff": ".tiff"}
-        ext = ext_map.get(mime, f".{mime}")
+        # raw base64 without a data: prefix
+        header, b64data = "", data_uri
+    raw = base64.b64decode(b64data)
+    is_pdf = raw[:5] == b"%PDF-" or "application/pdf" in header
+    if is_pdf:
+        ext = ".pdf"
+    else:
+        ext = ".png"
+        if "image/" in header:
+            mime = header.split("image/")[1].split(";")[0]
+            ext_map = {"png": ".png", "jpeg": ".jpg", "jpg": ".jpg", "gif": ".gif",
+                        "webp": ".webp", "bmp": ".bmp", "tiff": ".tiff"}
+            ext = ext_map.get(mime, f".{mime}")
     VISION_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     dest = VISION_OUTPUT_DIR / f"vision_{uuid.uuid4().hex[:12]}{ext}"
-    dest.write_bytes(base64.b64decode(b64data))
+    dest.write_bytes(raw)
     return str(dest)
 
 
-def _extract_chat_content(messages: list[ChatMessage]) -> tuple[str, str | None]:
-    """Extract text prompt and image path from OpenAI-format messages.
-    Returns (prompt_text, image_path_or_None)."""
+def _extract_chat_content(messages: list[ChatMessage]) -> tuple[str, list[str]]:
+    """Extract text prompt and all media paths (images and/or PDFs) from messages.
+
+    Returns (prompt_text, media_paths). image_url may be the OpenAI object form
+    ({"url": ...}) or a bare string. PDFs are rasterized per page in the handler.
+    """
     text_parts = []
-    image_path = None
+    media_paths: list[str] = []
 
     for msg in messages:
         if msg.role == "system":
-            # Prepend system message to prompt
             if isinstance(msg.content, str):
                 text_parts.insert(0, msg.content)
             continue
@@ -1875,126 +2017,255 @@ def _extract_chat_content(messages: list[ChatMessage]) -> tuple[str, str | None]
             for part in msg.content:
                 if part.type == "text" and part.text:
                     text_parts.append(part.text)
-                elif part.type == "image_url" and part.image_url:
-                    url = part.image_url.url
-                    if image_path is not None:
-                        continue  # only use first image
+                elif part.type == "image_url" and part.image_url is not None:
+                    iu = part.image_url
+                    url = iu if isinstance(iu, str) else iu.url
                     if url.startswith("data:"):
-                        image_path = _resolve_base64_image(url)
+                        media_paths.append(_resolve_base64_image(url))
                     elif url.startswith("/") or url.startswith("~"):
-                        # Local file path
                         expanded = os.path.expanduser(url)
                         if os.path.exists(expanded):
-                            image_path = expanded
+                            media_paths.append(expanded)
                         else:
-                            raise ValueError(f"Image file not found: {url}")
+                            raise ValueError(f"Media file not found: {url}")
                     elif url.startswith("http://") or url.startswith("https://"):
                         raise ValueError(
-                            "HTTP image URLs not supported - use base64 data URI or local file path"
+                            "HTTP URLs not supported - use base64 data URI or local file path"
                         )
                     else:
-                        # Try as filename in VISION_OUTPUT_DIR
                         candidate = VISION_OUTPUT_DIR / url
                         if candidate.exists():
-                            image_path = str(candidate)
+                            media_paths.append(str(candidate))
                         elif os.path.exists(url):
-                            image_path = url
+                            media_paths.append(url)
                         else:
-                            raise ValueError(f"Image not found: {url}")
+                            raise ValueError(f"Media not found: {url}")
 
     prompt = "\n".join(text_parts) if text_parts else "Describe this image."
-    return prompt, image_path
+    return prompt, media_paths
 
 
 @app.post("/v1/chat/completions")
 def chat_completions(req: ChatCompletionRequest):
-    """OpenAI-compatible chat completions endpoint for vision model."""
-    if req.stream:
-        raise HTTPException(400, "Streaming not supported - set stream=false")
+    """OpenAI-compatible chat completions endpoint for the vision model.
+
+    Accepts images and PDFs. A PDF is rasterized to one PNG per page; every page
+    (and every supplied image) is OCR'd by the VLM one at a time and the texts are
+    merged into a single response. Supports stream=false (JSON) and stream=true
+    (one-shot SSE), since OpenClaw's image tool sends stream=true.
+    """
+    global vision_model
     if vision_server_paused:
         raise HTTPException(503, "Vision server is paused")
     if vision_model is None:
-        raise HTTPException(503, "Vision model not loaded")
+        load_vision_model()
+        if vision_model is None:
+            raise HTTPException(503, "Vision model failed to load")
 
     try:
-        prompt, image_path = _extract_chat_content(req.messages)
+        prompt, media_paths = _extract_chat_content(req.messages)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    if image_path is None:
-        raise HTTPException(400, "No image provided in messages. Include an image_url content part.")
+    if not media_paths:
+        raise HTTPException(400, "No image or PDF provided in messages. Include an image_url content part.")
 
-    # Copy to vision_output if not already there
+    # Expand media into a flat list of page images. PDFs -> one PNG per page.
     VISION_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    src = Path(image_path)
-    if VISION_OUTPUT_DIR not in src.resolve().parents:
-        dest = VISION_OUTPUT_DIR / f"vision_{uuid.uuid4().hex[:12]}{src.suffix}"
-        shutil.copy2(image_path, dest)
-        image_path = str(dest)
+    page_images: list[str] = []
+    for m in media_paths:
+        if _is_pdf(m):
+            try:
+                rendered = _rasterize_pdf(m)
+            except Exception as e:
+                raise HTTPException(400, f"Failed to rasterize PDF: {e}")
+            if not rendered:
+                raise HTTPException(400, f"PDF has no renderable pages: {m}")
+            page_images.extend(rendered)
+        else:
+            src = Path(m)
+            if VISION_OUTPUT_DIR not in src.resolve().parents:
+                dest = VISION_OUTPUT_DIR / f"vision_{uuid.uuid4().hex[:12]}{src.suffix}"
+                shutil.copy2(m, dest)
+                page_images.append(str(dest))
+            else:
+                page_images.append(m)
+
+    multi = len(page_images) > 1
+    start = time.time()
+    prompt_tokens = 0
+    generation_tokens = 0
+    tps_samples = []
+    page_texts: list[str] = []
+    try:
+        with _gpu_queue():
+            for idx, img in enumerate(page_images):
+                formatted = apply_chat_template(
+                    vision_processor, vision_config, prompt, num_images=1
+                )
+                result = vlm_generate(
+                    vision_model, vision_processor,
+                    prompt=formatted, image=img,
+                    max_tokens=req.max_tokens, verbose=False,
+                )
+                page_text = result.text if hasattr(result, "text") else str(result)
+                page_text = _strip_vision_tokens(page_text)
+                if multi:
+                    page_texts.append(f"--- Page {idx + 1} ---\n{page_text}")
+                else:
+                    page_texts.append(page_text)
+                prompt_tokens += getattr(result, "prompt_tokens", 0)
+                generation_tokens += getattr(result, "generation_tokens", 0)
+                tps = getattr(result, "generation_tps", 0.0)
+                if tps:
+                    tps_samples.append(tps)
+            _maybe_clear_gpu_cache()
+    except Exception as e:
+        raise HTTPException(500, f"Vision generation failed: {e}")
+
+    response_text = "\n\n".join(page_texts)
+    latency_ms = (time.time() - start) * 1000
+    generation_tps = sum(tps_samples) / len(tps_samples) if tps_samples else 0.0
+    finish_reason = "stop"
+
+    save_vision_history(
+        prompt=prompt,
+        image_path=page_images[0],
+        response_text=response_text,
+        latency_ms=latency_ms,
+        prompt_tokens=prompt_tokens,
+        generation_tokens=generation_tokens,
+        generation_tps=generation_tps,
+    )
+
+    logger.info(
+        f"Vision: {len(page_images)} page(s), {len(prompt)}ch prompt, "
+        f"{len(response_text)}ch response in {latency_ms:.0f}ms (stream={req.stream})"
+    )
+
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created_ts = int(time.time())
+    model_name = req.model or "jinaai/jina-vlm-mlx"
+
+    if req.stream:
+        chunk = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created_ts,
+            "model": model_name,
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": response_text}, "finish_reason": None}],
+        }
+        done = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created_ts,
+            "model": model_name,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+        }
+        sse = f"data: {json.dumps(chunk)}\n\ndata: {json.dumps(done)}\n\ndata: [DONE]\n\n"
+        return Response(content=sse, media_type="text/event-stream")
+
+    return {
+        "id": completion_id,
+        "object": "chat.completion",
+        "created": created_ts,
+        "model": model_name,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": response_text}, "finish_reason": finish_reason}],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": generation_tokens,
+            "total_tokens": prompt_tokens + generation_tokens,
+        },
+    }
+
+
+# ============================================================
+# OpenAI-compatible Embeddings API
+# ============================================================
+
+def _embed_short_name() -> str:
+    """Short model id reported back to OpenAI-style clients."""
+    return embedding_model_name.split("/")[-1].replace("-mlx", "")
+
+
+def _approx_token_count(texts: list[str]) -> int:
+    """Approximate prompt tokens by summing whitespace-split lengths (no tokenizer)."""
+    return sum(len(t.split()) for t in texts)
+
+
+@app.post("/v1/embeddings")
+def create_embeddings(req: EmbeddingRequest):
+    """OpenAI-compatible embeddings endpoint backed by jina-embeddings-v5-omni."""
+    if embedding_server_paused:
+        raise HTTPException(503, "Embedding server is paused")
+    if embedding_model is None or not embedding_model.loaded:
+        raise HTTPException(503, "Embedding model not loaded")
+
+    texts = [req.input] if isinstance(req.input, str) else list(req.input)
+    if not texts:
+        raise HTTPException(400, "input must not be empty")
+
+    truncate_dim = req.dimensions if req.dimensions in MATRYOSHKA_DIMS else None
+    task, _task_type = resolve_task(req.input_type)
 
     start = time.time()
-    try:
-        formatted = apply_chat_template(
-            vision_processor, vision_config, prompt, num_images=1
-        )
-        with _gpu_queue():
-            result = vlm_generate(
-                vision_model, vision_processor,
-                prompt=formatted, image=image_path,
-                max_tokens=req.max_tokens, verbose=False,
-            )
-            _maybe_clear_gpu_cache()
+    with _gpu_queue():
+        vectors = embedding_model.encode(texts, req.input_type, truncate_dim)
+        _maybe_clear_gpu_cache()
+    latency_ms = (time.time() - start) * 1000
 
-        latency_ms = (time.time() - start) * 1000
-        response_text = result.text if hasattr(result, 'text') else str(result)
-        prompt_tokens = getattr(result, 'prompt_tokens', 0)
-        generation_tokens = getattr(result, 'generation_tokens', 0)
-        generation_tps = getattr(result, 'generation_tps', 0.0)
+    dims = len(vectors[0]) if vectors else (truncate_dim or embedding_model.dim)
+    prompt_tokens = _approx_token_count(texts)
 
-        # Determine finish reason
-        finish_reason = "stop"
-        if generation_tokens >= req.max_tokens:
-            finish_reason = "length"
+    save_embed_history(texts, task, dims, latency_ms, embedding_model_name, req.input_type)
+    logger.info(f"Embed: {len(texts)} texts, dims={dims}, task={task}, {latency_ms:.0f}ms")
 
-        save_vision_history(
-            prompt=prompt,
-            image_path=image_path,
-            response_text=response_text,
-            latency_ms=latency_ms,
-            prompt_tokens=prompt_tokens,
-            generation_tokens=generation_tokens,
-            generation_tps=generation_tps,
-        )
+    return {
+        "object": "list",
+        "data": [
+            {"object": "embedding", "index": i, "embedding": vec}
+            for i, vec in enumerate(vectors)
+        ],
+        "model": _embed_short_name(),
+        "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
+    }
 
-        logger.info(f"Vision: {len(prompt)}ch prompt, {len(response_text)}ch response in {latency_ms:.0f}ms")
 
-        return {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": vision_model_name,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": response_text,
-                    },
-                    "finish_reason": finish_reason,
-                }
-            ],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": generation_tokens,
-                "total_tokens": prompt_tokens + generation_tokens,
-            },
-        }
+@app.post("/embed")
+def embed_native(req: dict):
+    """Native convenience endpoint: {texts, input_type, dimensions} -> {embeddings, dim, task, latency_ms}."""
+    if embedding_server_paused:
+        raise HTTPException(503, "Embedding server is paused")
+    if embedding_model is None or not embedding_model.loaded:
+        raise HTTPException(503, "Embedding model not loaded")
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Chat completion error: {e}", exc_info=True)
-        raise HTTPException(500, f"Chat completion failed: {str(e)}")
+    texts = req.get("texts")
+    if isinstance(texts, str):
+        texts = [texts]
+    if not texts:
+        raise HTTPException(400, "texts must not be empty")
+
+    input_type = req.get("input_type")
+    dimensions = req.get("dimensions")
+    truncate_dim = dimensions if dimensions in MATRYOSHKA_DIMS else None
+    task, _task_type = resolve_task(input_type)
+
+    start = time.time()
+    with _gpu_queue():
+        vectors = embedding_model.encode(texts, input_type, truncate_dim)
+        _maybe_clear_gpu_cache()
+    latency_ms = (time.time() - start) * 1000
+
+    dims = len(vectors[0]) if vectors else (truncate_dim or embedding_model.dim)
+    save_embed_history(texts, task, dims, latency_ms, embedding_model_name, input_type)
+    logger.info(f"Embed: {len(texts)} texts, dims={dims}, task={task}, {latency_ms:.0f}ms")
+
+    return {
+        "embeddings": vectors,
+        "dim": dims,
+        "task": task,
+        "latency_ms": round(latency_ms, 2),
+    }
 
 
 @app.get("/v1/models")
@@ -2004,6 +2275,13 @@ async def list_models():
     if vision_model is not None:
         models.append({
             "id": vision_model_name,
+            "object": "model",
+            "created": 0,
+            "owned_by": "local",
+        })
+    if embedding_model is not None and embedding_model.loaded:
+        models.append({
+            "id": embedding_model_name,
             "object": "model",
             "created": 0,
             "owned_by": "local",
@@ -2165,6 +2443,66 @@ async def restart_vision_server():
     mx.clear_cache()
     load_vision_model()
     return {"status": "restarted", "model": vision_model_name}
+
+
+# ============================================================
+# Embedding endpoints (internal dashboard API)
+# ============================================================
+
+@app.get("/api/embed/status")
+async def get_embed_status():
+    return {
+        "model": embedding_model_name,
+        "model_short": embedding_model_name.split("/")[-1],
+        "loaded": embedding_model is not None and embedding_model.loaded,
+        "loading": embedding_model_loading,
+        "paused": embedding_server_paused,
+        "dim": embedding_model.dim if (embedding_model is not None and embedding_model.loaded) else None,
+        "matryoshka_dims": sorted(MATRYOSHKA_DIMS),
+    }
+
+
+@app.get("/api/embed/history")
+async def get_embed_history():
+    """Get embedding request history (all dates)."""
+    all_records = []
+    if HISTORY_DIR.exists():
+        for d in sorted(HISTORY_DIR.iterdir(), reverse=True):
+            if d.is_dir():
+                jsonl_path = d / "embed_history.jsonl"
+                if jsonl_path.exists():
+                    with open(jsonl_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.strip():
+                                record = json.loads(line)
+                                record["date"] = d.name
+                                all_records.append(record)
+    all_records.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+    return JSONResponse(all_records)
+
+
+@app.post("/api/embed/server/pause")
+async def pause_embed_server():
+    global embedding_server_paused
+    embedding_server_paused = True
+    return {"status": "paused"}
+
+
+@app.post("/api/embed/server/resume")
+async def resume_embed_server():
+    global embedding_server_paused
+    embedding_server_paused = False
+    return {"status": "active"}
+
+
+@app.post("/api/embed/server/restart")
+async def restart_embed_server():
+    global embedding_model
+    embedding_model = None
+    gc.collect()
+    mx.clear_cache()
+    load_embedding_model()
+    return {"status": "restarted", "model": embedding_model_name}
 
 
 # ============================================================
@@ -2377,4 +2715,4 @@ if __name__ == "__main__":
     logger.info(f"Starting MLX Serving on {HOST}:{PORT}")
     logger.info(f"Log file: {LOG_FILE}")
     # Limit threadpool: only 1 GPU so extra threads just waste memory waiting on _gpu_lock
-    uvicorn.run(app, host=HOST, port=PORT, log_level="warning", workers=1)
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info", workers=1)

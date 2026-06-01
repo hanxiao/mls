@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+# jina-embeddings-v5-omni wrapper - posts to the local mls server's /v1/embeddings endpoint
+# Usage:
+#   jina-embed "some text"                  # default retrieval.passage
+#   jina-embed --query "a question"         # retrieval.query
+#   jina-embed --task text-matching "text"
+#   jina-embed --dim 256 "text"
+#   echo "text" | jina-embed                # read from stdin
+# Prints JSON: {"dim":D,"n":N,"embedding":[...]} (single vector for one input, list for many)
+
+import argparse
+import json
+import sys
+import urllib.request
+
+SERVER_URL = "http://127.0.0.1:18321/v1/embeddings"
+MODEL = "jina-embeddings-v5-omni-small"
+
+
+def main():
+    parser = argparse.ArgumentParser(description="jina-embeddings-v5-omni CLI")
+    parser.add_argument("text", nargs="*", help="text(s) to embed; reads stdin if omitted")
+    parser.add_argument("--query", action="store_true", help="use retrieval.query input type")
+    parser.add_argument("--task", default=None, help="input_type/task (e.g. text-matching, classification, clustering)")
+    parser.add_argument("--dim", type=int, default=None, help="Matryoshka truncate dimension")
+    args = parser.parse_args()
+
+    texts = list(args.text)
+    if not texts:
+        stdin = sys.stdin.read().strip()
+        if not stdin:
+            print("Error: no input text provided", file=sys.stderr)
+            sys.exit(1)
+        texts = [stdin]
+
+    input_type = args.task
+    if args.query:
+        input_type = "retrieval.query"
+
+    payload = {"model": MODEL, "input": texts}
+    if input_type:
+        payload["input_type"] = input_type
+    if args.dim is not None:
+        payload["dimensions"] = args.dim
+
+    req = urllib.request.Request(
+        SERVER_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer local-mls"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        print(f"Error: server returned {e.code}: {e.read().decode('utf-8', 'replace')}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"Error: cannot reach server at {SERVER_URL}: {e.reason}", file=sys.stderr)
+        sys.exit(1)
+
+    vectors = [item["embedding"] for item in body.get("data", [])]
+    if not vectors:
+        print("Error: no embeddings in response", file=sys.stderr)
+        sys.exit(1)
+
+    dim = len(vectors[0])
+    out = {"dim": dim, "n": len(vectors), "embedding": vectors[0] if len(vectors) == 1 else vectors}
+    print(json.dumps(out))
+
+
+if __name__ == "__main__":
+    main()

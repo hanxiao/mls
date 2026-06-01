@@ -19,6 +19,7 @@ echo "Installing dependencies..."
 # Make scripts executable
 chmod +x "$PROJECT_DIR/bin/server.py"
 chmod +x "$PROJECT_DIR/bin/qwen3-asr"
+chmod +x "$PROJECT_DIR/bin/jina-embed"
 
 # Create logs directory
 mkdir -p "$PROJECT_DIR/logs"
@@ -26,6 +27,7 @@ mkdir -p "$PROJECT_DIR/logs"
 # Symlink wrapper to ~/.local/bin
 mkdir -p "$HOME/.local/bin"
 ln -sf "$PROJECT_DIR/bin/qwen3-asr" "$HOME/.local/bin/qwen3-asr"
+ln -sf "$PROJECT_DIR/bin/jina-embed" "$HOME/.local/bin/jina-embed"
 
 echo ""
 echo "Setup complete!"

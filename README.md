@@ -1,6 +1,6 @@
 # <img src="logo.svg" width="30" height="30" align="top"> MLS
 
-**MLX Local Serving** - unified local inference for ASR, TTS, Translation, Image Generation, and Vision on Apple Silicon. All five models run on Metal GPU via MLX and stay resident in memory.
+**MLX Local Serving** - unified local inference for ASR, TTS, Translation, Image Generation, Vision, and Embeddings on Apple Silicon. All six models run on Metal GPU via MLX and stay resident in memory.
 
 ![screenshot](screenshot.png)
 
@@ -25,6 +25,7 @@ Dashboard at `http://127.0.0.1:18321/` (also available at `/history`)
 | Translate | TranslateGemma-12B-8bit | 12 GB |
 | Image | Z-Image-Turbo-8bit (mflux) | 10 GB |
 | Vision | jina-vlm-mlx (4-bit) | 2 GB |
+| Embedding | jina-embeddings-v5-omni-small-mlx | ~3 GB |
 
 ## API
 
@@ -107,6 +108,31 @@ curl -X POST http://127.0.0.1:18321/v1/chat/completions \
 
 `GET /v1/models` lists loaded models. Upload images via `POST /api/vision/upload` (multipart form).
 
+### Embedding (OpenAI-compatible)
+
+Drop-in replacement for OpenAI's `/v1/embeddings`. Returns L2-normalized vectors (1024-dim, Matryoshka). Works with any OpenAI client and serves as the memory-search embedder for OpenClaw.
+
+```bash
+curl -X POST http://127.0.0.1:18321/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "jina-embeddings-v5-omni-small",
+    "input": ["the quick brown fox", "lorem ipsum"],
+    "input_type": "retrieval.passage",
+    "dimensions": 256
+  }'
+# -> {"object": "list", "data": [{"object": "embedding", "index": 0, "embedding": [...]}], ...}
+```
+
+`input_type` selects the task and prefix: `retrieval.query`, `retrieval.passage`, `text-matching`, `clustering`, `classification` (default `retrieval.passage`). `dimensions` truncates to a Matryoshka size (32, 64, 128, 256, 512, 1024).
+
+Native endpoint:
+```bash
+curl -X POST http://127.0.0.1:18321/embed \
+  -H "Content-Type: application/json" \
+  -d '{"input": ["hello world"], "input_type": "retrieval.query", "dimensions": 1024}'
+```
+
 ## Dashboard
 
 Three-column layout: sidebar (services, GPU/disk/USB/queue stats, log chart, theme toggle) | history | compose panel.
@@ -147,6 +173,31 @@ For automatic voice message transcription, add the ASR wrapper to `openclaw.json
   }
 }
 ```
+
+### Memory backend (embeddings)
+
+mls exposes an OpenAI-compatible embeddings endpoint that OpenClaw can use as its memory-search embedder. Point `agents.defaults.memorySearch` at it in `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "memorySearch": {
+        "provider": "openai",
+        "model": "jina-embeddings-v5-omni-small",
+        "remote": {
+          "baseUrl": "http://127.0.0.1:18321/v1",
+          "apiKey": "local-mls"
+        },
+        "queryInputType": "retrieval.query",
+        "documentInputType": "retrieval.passage"
+      }
+    }
+  }
+}
+```
+
+Switching embedders requires a memory reindex. Set `dimensions` on the request for Matryoshka truncation (32, 64, 128, 256, 512, 1024) if you want smaller vectors.
 
 ## Requirements
 

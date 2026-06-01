@@ -1,6 +1,6 @@
 # Local Model (MLS - MLX Local Serving)
 
-Four on-device ML models running on Mac Studio M3 Ultra via `http://127.0.0.1:18321`.
+Six on-device ML models running on Mac Studio M3 Ultra via `http://127.0.0.1:18321`.
 All models stay resident in GPU memory after server startup.
 
 Project: `~/Documents/mls/`
@@ -185,6 +185,88 @@ Notes:
 
 ---
 
+## 5. Embedding (Text)
+
+**Model**: jina-embeddings-v5-omni-small-mlx (USB: `/Volumes/One Touch/ai-models/huggingface/`)
+
+OpenAI-compatible endpoint. Returns L2-normalized vectors (1024-dim, Matryoshka).
+
+```
+POST /v1/embeddings
+Content-Type: application/json
+
+{
+  "model": "jina-embeddings-v5-omni-small",  # optional
+  "input": ["text1", "text2"],               # required, string or list of strings
+  "input_type": "retrieval.passage",         # optional, default "retrieval.passage"
+  "dimensions": 1024                          # optional, Matryoshka truncation
+}
+
+Response:
+{
+  "object": "list",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": [0.01, -0.02, ...]}
+  ],
+  "model": "jina-embeddings-v5-omni-small",
+  "usage": {"prompt_tokens": 12, "total_tokens": 12}
+}
+```
+
+`input_type` selects the task and the text prefix:
+
+| input_type | task | prefix |
+|------------|------|--------|
+| `retrieval.query` | retrieval | `Query: ` |
+| `retrieval.passage` | retrieval | `Document: ` |
+| `text-matching` | text-matching | `Document: ` |
+| `clustering` | clustering | `Document: ` |
+| `classification` | classification | `Document: ` |
+
+`dimensions` only accepts Matryoshka values: 32, 64, 128, 256, 512, 1024. Other values are ignored (full 1024-dim).
+
+Native endpoint (same fields, OpenAI response shape):
+```
+POST /embed
+{
+  "input": ["text"],
+  "input_type": "retrieval.query",
+  "dimensions": 256
+}
+```
+
+Status: `GET /api/embed/status`. History: `GET /api/embed/history`.
+
+### OpenClaw memory backend
+
+mls serves as the memory-search embedder for OpenClaw. Add to `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "memorySearch": {
+        "provider": "openai",
+        "model": "jina-embeddings-v5-omni-small",
+        "remote": {
+          "baseUrl": "http://127.0.0.1:18321/v1",
+          "apiKey": "local-mls"
+        },
+        "queryInputType": "retrieval.query",
+        "documentInputType": "retrieval.passage"
+      }
+    }
+  }
+}
+```
+
+Switching embedders requires a memory reindex. Quick test:
+```
+curl -X POST http://127.0.0.1:18321/v1/embeddings -H "Content-Type: application/json" -d '{"input": ["hello"], "input_type": "retrieval.query"}'
+```
+
+---
+
 ## Health Check
 
 ```
@@ -199,7 +281,9 @@ GET /health
   "translate_model": "translategemma-12b-it-8bit",
   "translate_loaded": true,
   "image_model": "z-image-turbo-8bit",
-  "image_loaded": true
+  "image_loaded": true,
+  "embedding_model": "jina-embeddings-v5-omni-small",
+  "embedding_loaded": true
 }
 ```
 
@@ -215,4 +299,7 @@ POST /api/tts/server/restart    # Restart TTS model
 POST /api/translate/server/pause
 POST /api/translate/server/resume
 POST /api/translate/server/restart
+POST /api/embed/server/pause      # Pause Embedding
+POST /api/embed/server/resume     # Resume Embedding
+POST /api/embed/server/restart    # Restart Embedding model
 ```
