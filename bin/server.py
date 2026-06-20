@@ -46,6 +46,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Fo
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 import uvicorn
 
 import shutil
@@ -114,7 +115,7 @@ han_ref_audio_array = None  # pre-loaded mx.array to skip disk IO per call
 han_ref_text = None
 
 # Default TTS model path on USB drive
-TTS_MODEL_PATH = "/Volumes/One Touch/ai-models/mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16"
+TTS_MODEL_PATH = "/Volumes/vault/ai-models/mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16"
 
 # Default voices for Qwen3-TTS
 TTS_VOICES = [
@@ -143,7 +144,7 @@ TTS_LANGUAGES = {
 translate_model = None
 translate_tokenizer = None
 translate_model_name = "translategemma-12b-it-8bit"
-translate_model_dir = "/Volumes/One Touch/ai-models/mlx-community/translategemma-12b-it-8bit"
+translate_model_dir = "/Volumes/vault/ai-models/mlx-community/translategemma-12b-it-8bit"
 translate_model_loading = False
 translate_server_paused = False
 
@@ -156,7 +157,7 @@ vision_config = None
 vision_model_name = "jinaai/jina-vlm-mlx"
 vision_model_loading = False
 vision_server_paused = False
-VISION_MODEL_PATH = "/Volumes/One Touch/ai-models/jinaai/jina-vlm-mlx"
+VISION_MODEL_PATH = "/Volumes/vault/ai-models/jinaai/jina-vlm-mlx"
 
 # ============================================================
 # Embedding globals
@@ -165,12 +166,13 @@ embedding_model = None  # EmbeddingEngine or None
 embedding_model_name = "jinaai/jina-embeddings-v5-omni-small-mlx"
 embedding_model_loading = False
 embedding_server_paused = False
-EMBEDDING_MODEL_PATH = "/Volumes/One Touch/ai-models/huggingface/hub/models--jinaai--jina-embeddings-v5-omni-small-mlx/snapshots/716c5b684db3f6ba574dd9b4f6b14af3b2eb8bda"
+EMBEDDING_MODEL_PATH = "/Volumes/vault/ai-models/huggingface/hub/models--jinaai--jina-embeddings-v5-omni-small-mlx/snapshots/716c5b684db3f6ba574dd9b4f6b14af3b2eb8bda"
 
 # Single lock for ALL GPU inference - MLX Metal cannot handle concurrent GPU access.
 # Separate per-service locks allowed ASR+TTS+Translate+Image to hit the GPU
 # simultaneously, causing Metal OOM crashes.
 _gpu_lock = threading.Lock()
+_gpu_counter_lock = threading.Lock()  # guards non-atomic counter +=/-= below
 _gpu_request_count = 0
 _gpu_queue_waiting = 0  # number of threads waiting to acquire _gpu_lock
 _gpu_inflight = 0  # total in-flight inference requests (from HTTP entry to response)
@@ -181,20 +183,24 @@ _GPU_CACHE_CLEAR_INTERVAL = 20
 def _track_request():
     """Track an in-flight inference request for the queue display."""
     global _gpu_inflight
-    _gpu_inflight += 1
+    with _gpu_counter_lock:
+        _gpu_inflight += 1
     try:
         yield
     finally:
-        _gpu_inflight -= 1
+        with _gpu_counter_lock:
+            _gpu_inflight -= 1
 
 
 class _gpu_queue:
     """Context manager that tracks queue depth around _gpu_lock."""
     def __enter__(self):
         global _gpu_queue_waiting
-        _gpu_queue_waiting += 1
+        with _gpu_counter_lock:
+            _gpu_queue_waiting += 1
         _gpu_lock.acquire()
-        _gpu_queue_waiting -= 1
+        with _gpu_counter_lock:
+            _gpu_queue_waiting -= 1
         return self
     def __exit__(self, *args):
         _gpu_lock.release()
@@ -218,15 +224,17 @@ translate_file_jobs: dict[str, dict] = {}
 file_synth_jobs: dict[str, dict] = {}
 
 _JOB_MAX_AGE = 3600  # prune completed jobs older than 1h
+_jobs_lock = threading.Lock()  # serialize insert/delete/iterate on the job dicts
 
 def _prune_jobs(jobs: dict):
     """Remove completed jobs older than _JOB_MAX_AGE seconds."""
     now = time.time()
-    stale = [k for k, v in jobs.items()
-             if v.get("status") in ("done", "error")
-             and now - v.get("_ts", 0) > _JOB_MAX_AGE]
-    for k in stale:
-        del jobs[k]
+    with _jobs_lock:
+        stale = [k for k, v in jobs.items()
+                 if v.get("status") in ("done", "error")
+                 and now - v.get("_ts", 0) > _JOB_MAX_AGE]
+        for k in stale:
+            del jobs[k]
 
 SUPPORTED_TRANSLATE_LANGS = {
     "af": "Afrikaans", "am": "Amharic", "ar": "Arabic", "az": "Azerbaijani",
@@ -270,12 +278,14 @@ async def lifespan(app):
         except Exception as e:
             logger.error(f"Failed to load {name}: {e}")
 
+    # Only eager-load the hot models (ASR / TTS / Embedding). Translate / Image /
+    # Vision are cold (weeks-to-months idle) and are lazy-loaded on first request
+    # via _ensure_translate_model / _ensure_image_model / _ensure_vision_model.
+    # This frees ~tens of GB of unified memory for GLM-5.2 and skips the slow
+    # Translate (~96s) load at startup.
     loaders = [
         (load_model, "ASR"),
         (load_tts_model, "TTS"),
-        (load_translate_model, "Translate"),
-        (load_image_model, "Image"),
-        (load_vision_model, "Vision"),
         (load_embedding_model, "Embedding"),
     ]
     threads = []
@@ -328,11 +338,13 @@ _INFERENCE_PATHS = {
 async def track_inflight_requests(request, call_next):
     global _gpu_inflight
     if request.url.path in _INFERENCE_PATHS:
-        _gpu_inflight += 1
+        with _gpu_counter_lock:
+            _gpu_inflight += 1
         try:
             return await call_next(request)
         finally:
-            _gpu_inflight -= 1
+            with _gpu_counter_lock:
+                _gpu_inflight -= 1
     return await call_next(request)
 
 
@@ -340,7 +352,7 @@ async def track_inflight_requests(request, call_next):
 # Image Generation globals
 # ============================================================
 IMAGE_OUTPUT_DIR = PROJECT_DIR / "image_output"
-MFLUX_MODEL_PATH = "/Volumes/One Touch/ai-models/mflux/z-image-turbo-8bit/"
+MFLUX_MODEL_PATH = "/Volumes/vault/ai-models/mflux/Z-Image-Turbo-mflux-4bit/"
 image_model = None
 image_model_loading = False
 
@@ -563,36 +575,40 @@ def _translate_text_impl(text: str, source: str, target: str) -> tuple[str, floa
 def _translate_file_worker(src_path: Path, out_path: Path, source: str, target: str, delimiter: str):
     """Background worker for file translation."""
     job = translate_file_jobs[str(out_path)]
-    content = src_path.read_text(encoding="utf-8")
-    segments = content.split("\n") if delimiter == "\n" else content.split(delimiter)
-    job["lines"] = len(segments)
+    try:
+        content = src_path.read_text(encoding="utf-8")
+        segments = content.split("\n") if delimiter == "\n" else content.split(delimiter)
+        job["lines"] = len(segments)
 
-    t0 = time.time()
-    translated = []
-    errors = 0
-    for i, segment in enumerate(segments):
-        stripped = segment.strip()
-        if not stripped:
-            translated.append("")
-            continue
-        try:
-            result, elapsed = translate_text(stripped, source, target)
-            translated.append(result)
-            job["done"] = i + 1
-            logger.info(f"Translate file [{i+1}/{len(segments)}] {len(stripped)}ch -> {len(result)}ch in {elapsed:.2f}s")
-        except Exception as e:
-            logger.error(f"Translate file [{i+1}/{len(segments)}] ERROR: {e}")
-            translated.append(stripped)
-            errors += 1
-            job["done"] = i + 1
+        t0 = time.time()
+        translated = []
+        errors = 0
+        for i, segment in enumerate(segments):
+            stripped = segment.strip()
+            if not stripped:
+                translated.append("")
+                continue
+            try:
+                result, elapsed = translate_text(stripped, source, target)
+                translated.append(result)
+                job["done"] = i + 1
+                logger.info(f"Translate file [{i+1}/{len(segments)}] {len(stripped)}ch -> {len(result)}ch in {elapsed:.2f}s")
+            except Exception as e:
+                logger.error(f"Translate file [{i+1}/{len(segments)}] ERROR: {e}")
+                translated.append(stripped)
+                errors += 1
+                job["done"] = i + 1
 
-    total_elapsed = time.time() - t0
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_text = delimiter.join(translated) if delimiter != "\n" else "\n".join(translated)
-    out_path.write_text(out_text, encoding="utf-8")
+        total_elapsed = time.time() - t0
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_text = delimiter.join(translated) if delimiter != "\n" else "\n".join(translated)
+        out_path.write_text(out_text, encoding="utf-8")
 
-    job.update({"status": "done", "errors": errors, "elapsed": round(total_elapsed, 2)})
-    logger.info(f"Translate file done: {len(segments)} lines, {errors} errors, {total_elapsed:.1f}s -> {out_path}")
+        job.update({"status": "done", "errors": errors, "elapsed": round(total_elapsed, 2)})
+        logger.info(f"Translate file done: {len(segments)} lines, {errors} errors, {total_elapsed:.1f}s -> {out_path}")
+    except Exception as e:
+        logger.error(f"Translate file worker failed: {e}")
+        job.update({"status": "error", "error": str(e)})
 
 
 # ============================================================
@@ -744,7 +760,7 @@ def load_tts_model(model_name: str = None):
         # Handle Han's voice clone model
         if tts_model_name == "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16":
             # Load the Base model
-            base_model_path = "/Volumes/One Touch/models/Qwen3-TTS-12Hz-1.7B-Base-bf16"
+            base_model_path = "/Volumes/vault/ai-models/mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
             if not os.path.exists(base_model_path):
                 raise FileNotFoundError(f"Base model not found: {base_model_path}")
             
@@ -752,11 +768,12 @@ def load_tts_model(model_name: str = None):
             tts_model = tts_load_fn(model_path=base_model_path)
             
             # Load or extract speaker embedding
-            han_model_dir = "/Volumes/One Touch/models/qwen3-tts-1.7B-han"
-            embedding_cache_path = os.path.join(han_model_dir, "speaker_embedding.npz")
+            han_model_dir = "/Volumes/vault/ai-models/mlx-community/qwen3-tts-1.7B-han"
+            embedding_cache_path = os.path.join(han_model_dir, "speaker_embedding.safetensors")
             ref_audio_path = os.path.join(han_model_dir, "ref_30s.wav")
             ref_text_path = os.path.join(han_model_dir, "ref_text_30s.txt")
-            
+            reused_ref_audio_array = None
+
             # Try to load cached embedding first
             if os.path.exists(embedding_cache_path):
                 logger.info("Loading cached speaker embedding...")
@@ -783,7 +800,8 @@ def load_tts_model(model_name: str = None):
                     ref_audio_array, sr=24000
                 )
                 mx.eval(han_speaker_embedding)
-                
+                reused_ref_audio_array = ref_audio_array
+
                 # Save to cache
                 try:
                     mx.save_safetensors(
@@ -806,13 +824,16 @@ def load_tts_model(model_name: str = None):
             if han_ref_text is None:
                 with open(ref_text_path, "r", encoding="utf-8") as f:
                     han_ref_text = f.read().strip()
-            from mlx_audio.utils import load_audio as _load_audio
-            han_ref_audio_array = _load_audio(ref_audio_path, sample_rate=24000)
+            if reused_ref_audio_array is not None:
+                han_ref_audio_array = reused_ref_audio_array
+            else:
+                from mlx_audio.utils import load_audio as _load_audio
+                han_ref_audio_array = _load_audio(ref_audio_path, sample_rate=24000)
             mx.eval(han_ref_audio_array)
             logger.info("Pre-loaded ref audio array for Han voice clone")
         else:
             # Standard model loading
-            usb_base = "/Volumes/One Touch/ai-models/mlx-community"
+            usb_base = "/Volumes/vault/ai-models/mlx-community"
             usb_path = os.path.join(usb_base, tts_model_name.split("/")[-1])
             if os.path.exists(usb_path):
                 model_path = usb_path
@@ -892,7 +913,7 @@ def load_image_model():
         from mflux.models.z_image.variants.turbo.z_image_turbo import ZImageTurbo
 
         image_model = ZImageTurbo(
-            quantize=8,
+            quantize=4,
             model_path=MFLUX_MODEL_PATH,
         )
         elapsed = time.time() - start
@@ -955,6 +976,49 @@ def load_embedding_model():
         embedding_model_loading = False
 
 
+# ============================================================
+# Lazy-load helpers for cold models (Translate / Image / Vision)
+# These are loaded on first request instead of at startup to save memory.
+# ============================================================
+_lazy_load_lock = threading.Lock()
+
+
+def _ensure_translate_model():
+    """Load translate model on first use. Thread-safe."""
+    global translate_model
+    if translate_model is not None:
+        return
+    with _lazy_load_lock:
+        if translate_model is None:
+            logger.info("Lazy-loading Translate model on first request...")
+            with _gpu_lock:
+                load_translate_model()
+
+
+def _ensure_image_model():
+    """Load image model on first use. Thread-safe."""
+    global image_model
+    if image_model is not None:
+        return
+    with _lazy_load_lock:
+        if image_model is None:
+            logger.info("Lazy-loading Image model on first request...")
+            with _gpu_lock:
+                load_image_model()
+
+
+def _ensure_vision_model():
+    """Load vision model on first use. Thread-safe."""
+    global vision_model
+    if vision_model is not None:
+        return
+    with _lazy_load_lock:
+        if vision_model is None:
+            logger.info("Lazy-loading Vision model on first request...")
+            with _gpu_lock:
+                load_vision_model()
+
+
 def convert_wav_to_ogg(wav_path: str, ogg_path: str) -> bool:
     """Convert WAV to OGG Opus using ffmpeg. Returns True on success."""
     try:
@@ -977,6 +1041,10 @@ def convert_to_wav(audio_path: str) -> str:
         "-ar", "16000", "-ac", "1", wav_path
     ], capture_output=True)
     if result.returncode != 0:
+        try:
+            os.unlink(wav_path)
+        except OSError:
+            pass
         raise FileNotFoundError(f"ffmpeg conversion failed: {result.stderr[:200]}")
     return wav_path
 
@@ -1035,22 +1103,24 @@ async def resume_server():
 
 
 @app.post("/api/server/restart")
-async def restart_server():
+def restart_server():
     global model
-    model = None
-    gc.collect()
-    mx.clear_cache()
-    load_model()
+    with _gpu_lock:
+        model = None
+        gc.collect()
+        mx.clear_cache()
+        load_model()
     return {"status": "restarted", "model": current_model_name}
 
 
 @app.post("/api/model/switch")
-async def switch_model(req: SwitchModelRequest):
+def switch_model(req: SwitchModelRequest):
     global model
     if req.model not in AVAILABLE_MODELS:
         raise HTTPException(status_code=400, detail=f"Model not available: {req.model}")
-    model = None
-    load_model(req.model)
+    with _gpu_lock:
+        model = None
+        load_model(req.model)
     return {"status": "switched", "model": current_model_name}
 
 
@@ -1132,20 +1202,23 @@ async def transcribe(request: Request):
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
                 f.write(await file.read())
                 tmp_path = f.name
-            return _transcribe_audio(tmp_path, language)
+            return await run_in_threadpool(_transcribe_audio, tmp_path, language)
         else:
             body = await request.json()
             path = body.get("path")
             audio_base64 = body.get("audio_base64")
             language = body.get("language", "zh")
             if path:
-                return _transcribe_audio(path, language)
+                return await run_in_threadpool(_transcribe_audio, path, language)
             elif audio_base64:
-                audio_bytes = base64.b64decode(audio_base64)
+                try:
+                    audio_bytes = base64.b64decode(audio_base64)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid base64 audio")
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                     f.write(audio_bytes)
                     tmp_path = f.name
-                return _transcribe_audio(tmp_path, language)
+                return await run_in_threadpool(_transcribe_audio, tmp_path, language)
             else:
                 raise HTTPException(status_code=400, detail="Either 'path' or 'audio_base64' is required")
     finally:
@@ -1195,7 +1268,7 @@ async def get_audio(date: str, filename: str):
                                 return FileResponse(original_path, media_type="audio/ogg")
                         break
     local_path = HISTORY_DIR / date / filename
-    if local_path.exists():
+    if HISTORY_DIR in local_path.resolve().parents and local_path.exists():
         return FileResponse(local_path, media_type="audio/ogg")
     raise HTTPException(status_code=404, detail="Audio file not found")
 
@@ -1227,15 +1300,19 @@ async def get_tts_status():
 
 
 @app.post("/api/tts/model/switch")
-async def switch_tts_model(req: SwitchTTSModelRequest):
+def switch_tts_model(req: SwitchTTSModelRequest):
     """Switch TTS model."""
     global tts_model
     if req.model not in AVAILABLE_TTS_MODELS:
         raise HTTPException(status_code=400, detail=f"TTS model not available: {req.model}")
-    tts_model = None
-    gc.collect()
-    mx.clear_cache()
-    load_tts_model(req.model)
+    # Serialize against in-flight synthesis (holds _gpu_lock via _gpu_queue) and
+    # other lazy loads (hold _lazy_load_lock); run the GPU load under the lock so
+    # it cannot race threadpool synthesis on Metal.
+    with _lazy_load_lock, _gpu_lock:
+        tts_model = None
+        gc.collect()
+        mx.clear_cache()
+        load_tts_model(req.model)
     return {"status": "switched", "model": tts_model_name}
 
 
@@ -1253,7 +1330,7 @@ async def get_tts_voices():
 
 
 @app.get("/api/tts/history")
-async def get_tts_history():
+def get_tts_history():
     """Get TTS generation history (all dates)."""
     all_records = []
     if HISTORY_DIR.exists():
@@ -1290,7 +1367,7 @@ async def get_tts_history_by_date(date: str):
 async def get_tts_audio(filename: str):
     """Serve TTS generated audio file."""
     audio_path = TTS_OUTPUT_DIR / filename
-    if audio_path.exists():
+    if TTS_OUTPUT_DIR in audio_path.resolve().parents and audio_path.exists():
         media_type = "audio/ogg" if filename.endswith(".ogg") else "audio/wav"
         return FileResponse(audio_path, media_type=media_type)
     raise HTTPException(status_code=404, detail="Audio file not found")
@@ -1601,15 +1678,16 @@ async def synthesize_file(req: SynthesizeFileRequest):
 
     out_key = str(out_path)
     _prune_jobs(file_synth_jobs)
-    file_synth_jobs[out_key] = {
-        "status": "running",
-        "segments": 0,
-        "done": 0,
-        "errors": 0,
-        "elapsed": 0,
-        "audio_duration_ms": 0,
-        "_ts": time.time(),
-    }
+    with _jobs_lock:
+        file_synth_jobs[out_key] = {
+            "status": "running",
+            "segments": 0,
+            "done": 0,
+            "errors": 0,
+            "elapsed": 0,
+            "audio_duration_ms": 0,
+            "_ts": time.time(),
+        }
 
     thread = threading.Thread(
         target=_synthesize_file_worker,
@@ -1644,12 +1722,13 @@ async def resume_tts_server():
 
 
 @app.post("/api/tts/server/restart")
-async def restart_tts_server():
+def restart_tts_server():
     global tts_model
-    tts_model = None
-    gc.collect()
-    mx.clear_cache()
-    load_tts_model()
+    with _gpu_lock:
+        tts_model = None
+        gc.collect()
+        mx.clear_cache()
+        load_tts_model()
     return {"status": "restarted", "model": tts_model_name}
 
 
@@ -1685,13 +1764,15 @@ async def resume_translate_server():
 
 
 @app.post("/api/translate/server/restart")
-async def restart_translate_server():
+def restart_translate_server():
     global translate_model, translate_tokenizer
-    translate_model = None
-    translate_tokenizer = None
-    gc.collect()
-    mx.clear_cache()
-    load_translate_model()
+    with _lazy_load_lock:
+        with _gpu_lock:
+            translate_model = None
+            translate_tokenizer = None
+            gc.collect()
+            mx.clear_cache()
+            load_translate_model()
     return {"status": "restarted", "model": translate_model_name}
 
 
@@ -1699,6 +1780,7 @@ async def restart_translate_server():
 def post_translate(req: TranslateRequest):
     if translate_server_paused:
         raise HTTPException(503, "Translate server is paused")
+    _ensure_translate_model()
     if translate_model is None:
         raise HTTPException(503, "Translate model not loaded")
 
@@ -1731,6 +1813,7 @@ def get_translate(
 ):
     if translate_server_paused:
         raise HTTPException(503, "Translate server is paused")
+    _ensure_translate_model()
     if translate_model is None:
         raise HTTPException(503, "Translate model not loaded")
     if source not in SUPPORTED_TRANSLATE_LANGS:
@@ -1752,6 +1835,7 @@ def get_translate(
 
 @app.post("/translate/file")
 def translate_file_endpoint(req: FileTranslateRequest):
+    _ensure_translate_model()
     if translate_model is None:
         raise HTTPException(503, "Translate model not loaded")
 
@@ -1770,7 +1854,8 @@ def translate_file_endpoint(req: FileTranslateRequest):
 
     out_key = str(out_path)
     _prune_jobs(translate_file_jobs)
-    translate_file_jobs[out_key] = {"status": "running", "lines": 0, "done": 0, "errors": 0, "elapsed": 0, "_ts": time.time()}
+    with _jobs_lock:
+        translate_file_jobs[out_key] = {"status": "running", "lines": 0, "done": 0, "errors": 0, "elapsed": 0, "_ts": time.time()}
 
     thread = threading.Thread(
         target=_translate_file_worker,
@@ -1798,7 +1883,7 @@ async def get_languages():
 
 
 @app.get("/api/translate/history")
-async def get_translate_history():
+def get_translate_history():
     """Get translation history (all dates)."""
     all_records = []
     if HISTORY_DIR.exists():
@@ -1832,6 +1917,7 @@ async def get_image_status():
 
 @app.post("/api/image/generate")
 def generate_image(req: ImageGenRequest):
+    _ensure_image_model()
     if image_model is None:
         raise HTTPException(503, "Image model not loaded (USB not mounted or load failed)")
 
@@ -1898,12 +1984,12 @@ def generate_image(req: ImageGenRequest):
 async def get_image_file(filename: str):
     """Serve generated image file."""
     image_path = IMAGE_OUTPUT_DIR / filename
-    if image_path.exists():
+    if IMAGE_OUTPUT_DIR in image_path.resolve().parents and image_path.exists():
         return FileResponse(image_path)
     raise HTTPException(404, "Image not found")
 
 @app.get("/api/image/history")
-async def get_image_history():
+def get_image_history():
     """Get image history."""
     all_records = []
     if HISTORY_DIR.exists():
@@ -2057,10 +2143,9 @@ def chat_completions(req: ChatCompletionRequest):
     global vision_model
     if vision_server_paused:
         raise HTTPException(503, "Vision server is paused")
+    _ensure_vision_model()
     if vision_model is None:
-        load_vision_model()
-        if vision_model is None:
-            raise HTTPException(503, "Vision model failed to load")
+        raise HTTPException(503, "Vision model failed to load")
 
     try:
         prompt, media_paths = _extract_chat_content(req.messages)
@@ -2321,6 +2406,7 @@ async def upload_vision_file(file: UploadFile = File(...)):
 def analyze_vision(req: VisionRequest):
     if vision_server_paused:
         raise HTTPException(503, "Vision server is paused")
+    _ensure_vision_model()
     if vision_model is None:
         raise HTTPException(503, "Vision model not loaded")
 
@@ -2395,13 +2481,13 @@ def analyze_vision(req: VisionRequest):
 async def get_vision_file(filename: str):
     """Serve uploaded/processed vision images."""
     file_path = VISION_OUTPUT_DIR / filename
-    if file_path.exists():
+    if VISION_OUTPUT_DIR in file_path.resolve().parents and file_path.exists():
         return FileResponse(file_path)
     raise HTTPException(404, "Image not found")
 
 
 @app.get("/api/vision/history")
-async def get_vision_history():
+def get_vision_history():
     """Get vision history (all dates)."""
     all_records = []
     if HISTORY_DIR.exists():
@@ -2434,14 +2520,16 @@ async def resume_vision_server():
 
 
 @app.post("/api/vision/server/restart")
-async def restart_vision_server():
+def restart_vision_server():
     global vision_model, vision_processor, vision_config
-    vision_model = None
-    vision_processor = None
-    vision_config = None
-    gc.collect()
-    mx.clear_cache()
-    load_vision_model()
+    with _lazy_load_lock:
+        with _gpu_lock:
+            vision_model = None
+            vision_processor = None
+            vision_config = None
+            gc.collect()
+            mx.clear_cache()
+            load_vision_model()
     return {"status": "restarted", "model": vision_model_name}
 
 
@@ -2463,7 +2551,7 @@ async def get_embed_status():
 
 
 @app.get("/api/embed/history")
-async def get_embed_history():
+def get_embed_history():
     """Get embedding request history (all dates)."""
     all_records = []
     if HISTORY_DIR.exists():
@@ -2496,12 +2584,13 @@ async def resume_embed_server():
 
 
 @app.post("/api/embed/server/restart")
-async def restart_embed_server():
+def restart_embed_server():
     global embedding_model
-    embedding_model = None
-    gc.collect()
-    mx.clear_cache()
-    load_embedding_model()
+    with _gpu_lock:
+        embedding_model = None
+        gc.collect()
+        mx.clear_cache()
+        load_embedding_model()
     return {"status": "restarted", "model": embedding_model_name}
 
 
@@ -2566,7 +2655,7 @@ def _get_gpu_stats() -> dict:
         pass
 
     # USB disk usage (if mounted)
-    usb_path = "/Volumes/One Touch"
+    usb_path = "/Volumes/vault"
     if os.path.ismount(usb_path):
         try:
             du = shutil.disk_usage(usb_path)
@@ -2585,7 +2674,7 @@ def _get_gpu_stats() -> dict:
 
 
 @app.get("/api/gpu")
-async def get_gpu_stats():
+def get_gpu_stats():
     stats = _get_gpu_stats()
     # Queue count is live, not cached
     stats["gpu_queue_waiting"] = _gpu_queue_waiting
@@ -2604,7 +2693,7 @@ from fastapi.responses import StreamingResponse
 import asyncio
 
 @app.get("/api/logs/histogram")
-async def get_log_histogram():
+def get_log_histogram():
     """Return log line counts per minute for the last 60 minutes."""
     now = datetime.now()
     counts = Counter()

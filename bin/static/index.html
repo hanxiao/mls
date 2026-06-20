@@ -810,6 +810,13 @@
         };
         let _lastHistoryData = { tts: [], translate: [], image: [], vision: [], embed: [] };
         let _prevHistoryCounts = { asr: -1, tts: -1, translate: -1, image: -1, vision: -1, embed: -1 };
+        let _lastRenderSig = { asr:'', tts:'', translate:'', image:'', vision:'', embed:'' };
+        function _historySig(records){
+          if (!records.length) return '0';
+          let maxTs = '';
+          for (const r of records) if (r.timestamp > maxTs) maxTs = r.timestamp;
+          return records.length + '|' + maxTs;
+        }
         const _failedImages = new Set();
 
         function flashServiceRow(service) {
@@ -865,6 +872,7 @@
 
         // ========== ASR state ==========
         let currentDate = null;
+        let userSelectedAsrDate = false;
         let lastRecordCount = 0;
         function getLocalToday() {
             const now = new Date();
@@ -872,6 +880,7 @@
         }
 
         let knownDates = [];
+        let _durationCache = {}; // per-date audio duration ms; past dates are immutable
         let currentSort = 'time';
         let sortAscending = false;
         let currentSpeed = 2;
@@ -963,6 +972,7 @@
         function calSelectDate(dateStr) {
             if (currentTab === 'asr') {
                 currentDate = dateStr;
+                userSelectedAsrDate = true;
                 loadTranscripts(dateStr);
             } else if (currentTab === 'tts') {
                 ttsCurrentDate = dateStr;
@@ -1191,12 +1201,13 @@
             const now = new Date();
             const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
 
+            let todayDuration = 0;
             try {
                 const todayRes = await fetch(`/api/transcripts/${today}`);
                 if (todayRes.ok) {
                     const todayRecords = await todayRes.json();
                     document.getElementById('stat-today').textContent = todayRecords.length + ' items';
-                    const todayDuration = todayRecords.reduce((sum, r) => sum + (r.audio_duration_ms || 0), 0);
+                    todayDuration = todayRecords.reduce((sum, r) => sum + (r.audio_duration_ms || 0), 0);
                     document.getElementById('stat-today-duration').textContent = formatDurationHHMM(todayDuration);
                 } else {
                     document.getElementById('stat-today').textContent = '0 items';
@@ -1209,20 +1220,26 @@
 
             let totalDuration = 0;
             for (const date of dates) {
+                if (date === today) { totalDuration += todayDuration; continue; }
+                if (_durationCache[date] !== undefined) { totalDuration += _durationCache[date]; continue; }
                 try {
                     const res = await fetch(`/api/transcripts/${date}`);
                     if (res.ok) {
                         const records = await res.json();
-                        totalDuration += records.reduce((sum, r) => sum + (r.audio_duration_ms || 0), 0);
+                        const d = records.reduce((sum, r) => sum + (r.audio_duration_ms || 0), 0);
+                        _durationCache[date] = d;
+                        totalDuration += d;
                     }
                 } catch (e) {}
             }
             document.getElementById('stat-total-duration').textContent = formatDurationHHMM(totalDuration);
 
-            if (dates.includes(today)) {
+            if (!userSelectedAsrDate && dates.includes(today)) {
                 loadTranscripts(today);
-            } else if (!currentDate || hadNewDate) {
-                loadTranscripts(dates[0]);
+            } else if (!currentDate) {
+                loadTranscripts(dates.includes(today) ? today : dates[0]);
+            } else {
+                loadTranscripts(currentDate);
             }
 
             document.getElementById('stat-total').textContent = dates.length + ' days';
@@ -1237,12 +1254,14 @@
             const records = await res.json();
             const container = document.getElementById('transcripts');
 
-            const hadNewRecords = records.length > lastRecordCount;
-            lastRecordCount = records.length;
-            if (hadNewRecords && _prevHistoryCounts.asr >= 0) flashServiceRow('asr');
-            _prevHistoryCounts.asr = records.length;
-
             const now = new Date(); const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+            const isToday = date === today;
+            const hadNewRecords = isToday && records.length > lastRecordCount;
+            if (isToday) {
+                if (hadNewRecords && _prevHistoryCounts.asr >= 0) flashServiceRow('asr');
+                lastRecordCount = records.length;
+                _prevHistoryCounts.asr = records.length;
+            }
             if (date === today) {
                 document.getElementById('stat-today').textContent = records.length + ' items';
             }
@@ -1251,6 +1270,13 @@
                 container.innerHTML = '<div class="empty">no transcripts for this date</div>';
                 return;
             }
+
+            const sig = _historySig(records);
+            if (sig === _lastRenderSig.asr && container.querySelector('.transcript')) {
+                if (hadNewRecords) container.scrollTop = container.scrollHeight;
+                return;
+            }
+            _lastRenderSig.asr = sig;
 
             const sortedRecords = sortRecords(records);
 
@@ -1559,8 +1585,15 @@
             const rect = container.getBoundingClientRect();
             const x = e.clientX - rect.left;
             const progress = x / rect.width;
-            if (currentAudio && currentAudio.duration) {
-                currentAudio.currentTime = progress * currentAudio.duration;
+            if (currentAudio) {
+                const audio = currentAudio;
+                if (audio.duration) {
+                    audio.currentTime = progress * audio.duration;
+                } else {
+                    audio.addEventListener('loadedmetadata', () => {
+                        audio.currentTime = progress * audio.duration;
+                    }, { once: true });
+                }
             }
         }
 
@@ -1661,30 +1694,36 @@
         // ========== TTS functions ==========
         
         async function loadTTSStatus() {
-            const res = await fetch('/api/tts/status');
-            const status = await res.json();
+            try {
+                const res = await fetch('/api/tts/status');
+                if (!res.ok) throw new Error('tts status ' + res.status);
+                const status = await res.json();
 
-            document.getElementById('svc-model-short-tts').textContent = status.model_short;
-            document.getElementById('tts-model-name').textContent = status.model;
+                document.getElementById('svc-model-short-tts').textContent = status.model_short;
+                document.getElementById('tts-model-name').textContent = status.model;
 
-            const dot = document.getElementById('tts-status-dot');
-            dot.className = 'status-dot';
-            if (!status.loaded) dot.classList.add(status.loading ? 'loading' : 'error');
-            else if (status.paused) dot.classList.add('paused');
-            
-            // Populate models
-            const select = document.getElementById('tts-model-select');
-            select.innerHTML = status.available_models.map(m => 
-                `<option value="${m}" ${m === status.model ? 'selected' : ''}>${m.split('/').pop()}</option>`
-            ).join('');
+                const dot = document.getElementById('tts-status-dot');
+                dot.className = 'status-dot';
+                if (!status.loaded) dot.classList.add(status.loading ? 'loading' : 'error');
+                else if (status.paused) dot.classList.add('paused');
 
-            // Populate voices
-            const vRes = await fetch('/api/tts/voices');
-            const voices = await vRes.json();
-            const vSelect = document.getElementById('tts-voice-select');
-            vSelect.innerHTML = voices.map(v => 
-                `<option value="${v.id}">${v.name} (${v.language})</option>`
-            ).join('');
+                // Populate models
+                const select = document.getElementById('tts-model-select');
+                select.innerHTML = (status.available_models || []).map(m =>
+                    `<option value="${m}" ${m === status.model ? 'selected' : ''}>${m.split('/').pop()}</option>`
+                ).join('');
+
+                // Populate voices
+                const vRes = await fetch('/api/tts/voices');
+                if (!vRes.ok) throw new Error('tts voices ' + vRes.status);
+                const voices = await vRes.json();
+                const vSelect = document.getElementById('tts-voice-select');
+                vSelect.innerHTML = (voices || []).map(v =>
+                    `<option value="${v.id}">${v.name} (${v.language})</option>`
+                ).join('');
+            } catch (e) {
+                console.warn('loadTTSStatus failed', e);
+            }
         }
 
         async function loadTTSHistory() {
@@ -1693,6 +1732,9 @@
             if (records.length > _prevHistoryCounts.tts && _prevHistoryCounts.tts >= 0) flashServiceRow('tts');
             _prevHistoryCounts.tts = records.length;
             _lastHistoryData.tts = records;
+            const sig = _historySig(records);
+            if (sig === _lastRenderSig.tts) return;
+            _lastRenderSig.tts = sig;
             renderTTSHistory(sortHistoryRecords(records, historySortState.tts.field, historySortState.tts.ascending));
         }
 
@@ -1718,8 +1760,8 @@
                 <div class="tts-item" data-audio-url="/tts_audio/${r.audio_file}">
                     <div class="transcript-header">
                         <span class="transcript-time">${time}</span>
-                        <span class="tts-voice-badge">${r.voice}</span>
-                        <span class="tts-lang-badge">${r.language}</span>
+                        <span class="tts-voice-badge">${escapeHtml(r.voice)}</span>
+                        <span class="tts-lang-badge">${escapeHtml(r.language)}</span>
                         <span class="transcript-latency">${CLOCK_ICON}${latency}s</span>
                     </div>
                     <div class="transcript-text">${escapeHtml(r.text)}</div>
@@ -1797,16 +1839,21 @@
         // ========== Translate functions ==========
         
         async function loadTranslateStatus() {
-            const res = await fetch('/api/translate/status');
-            const status = await res.json();
+            try {
+                const res = await fetch('/api/translate/status');
+                if (!res.ok) throw new Error('translate status ' + res.status);
+                const status = await res.json();
 
-            document.getElementById('svc-model-short-translate').textContent = 'TranslateGemma';
-            document.getElementById('translate-model-name').textContent = status.model;
+                document.getElementById('svc-model-short-translate').textContent = 'TranslateGemma';
+                document.getElementById('translate-model-name').textContent = status.model;
 
-            const dot = document.getElementById('translate-status-dot');
-            dot.className = 'status-dot';
-            if (!status.loaded) dot.classList.add(status.loading ? 'loading' : 'error');
-            else if (status.paused) dot.classList.add('paused');
+                const dot = document.getElementById('translate-status-dot');
+                dot.className = 'status-dot';
+                if (!status.loaded) dot.classList.add(status.loading ? 'loading' : 'error');
+                else if (status.paused) dot.classList.add('paused');
+            } catch (e) {
+                console.warn('loadTranslateStatus failed', e);
+            }
         }
 
         async function loadTranslateLanguages() {
@@ -1871,6 +1918,9 @@
             if (records.length > _prevHistoryCounts.translate && _prevHistoryCounts.translate >= 0) flashServiceRow('translate');
             _prevHistoryCounts.translate = records.length;
             _lastHistoryData.translate = records;
+            const sig = _historySig(records);
+            if (sig === _lastRenderSig.translate) return;
+            _lastRenderSig.translate = sig;
             renderTranslateHistory(sortHistoryRecords(records, historySortState.translate.field, historySortState.translate.ascending));
         }
 
@@ -1936,16 +1986,23 @@
             if (translateFilePolling) clearInterval(translateFilePolling);
             
             translateFilePolling = setInterval(async () => {
-                const res = await fetch(`/translate/file/status?output=${encodeURIComponent(output)}`);
-                const status = await res.json();
-                
-                const pct = status.lines ? (status.done / status.lines * 100) : 0;
-                document.getElementById('translate-file-progress-fill').style.width = pct + '%';
-                document.getElementById('translate-file-progress-text').textContent = 
-                    `${status.done} / ${status.lines} lines (${status.status})`;
-                
-                if (status.status !== 'running') {
-                    clearInterval(translateFilePolling);
+                try {
+                    const res = await fetch(`/translate/file/status?output=${encodeURIComponent(output)}`);
+                    if (!res.ok) return;
+                    const status = await res.json();
+                    if (!status || typeof status !== 'object') return;
+
+                    const pct = status.lines ? (status.done / status.lines * 100) : 0;
+                    document.getElementById('translate-file-progress-fill').style.width = pct + '%';
+                    document.getElementById('translate-file-progress-text').textContent =
+                        `${status.done} / ${status.lines} lines (${status.status})`;
+
+                    if (status.status !== 'running') {
+                        clearInterval(translateFilePolling);
+                    }
+                } catch (e) {
+                    // transient poll failure: skip this tick, retry on next interval
+                    console.error('File translate poll error:', e);
                 }
             }, 1000);
         }
@@ -1962,17 +2019,22 @@
         // ========== Image functions ==========
         
         async function loadImageStatus() {
-            const res = await fetch('/api/image/status');
-            const status = await res.json();
+            try {
+                const res = await fetch('/api/image/status');
+                if (!res.ok) throw new Error('image status ' + res.status);
+                const status = await res.json();
 
-            const dot = document.getElementById('image-status-dot');
-            dot.className = 'status-dot';
-            if (status.loaded) {
-                // green
-            } else if (status.loading) {
-                dot.classList.add('loading');
-            } else {
-                dot.classList.add('error');
+                const dot = document.getElementById('image-status-dot');
+                dot.className = 'status-dot';
+                if (status.loaded) {
+                    // green
+                } else if (status.loading) {
+                    dot.classList.add('loading');
+                } else {
+                    dot.classList.add('error');
+                }
+            } catch (e) {
+                console.warn('loadImageStatus failed', e);
             }
         }
         
@@ -2022,6 +2084,9 @@
             if (records.length > _prevHistoryCounts.image && _prevHistoryCounts.image >= 0) flashServiceRow('image');
             _prevHistoryCounts.image = records.length;
             _lastHistoryData.image = records;
+            const sig = _historySig(records);
+            if (sig === _lastRenderSig.image) return;
+            _lastRenderSig.image = sig;
             renderImageHistory(sortHistoryRecords(records, historySortState.image.field, historySortState.image.ascending));
         }
 
@@ -2157,6 +2222,9 @@
             if (records.length > _prevHistoryCounts.vision && _prevHistoryCounts.vision >= 0) flashServiceRow('vision');
             _prevHistoryCounts.vision = records.length;
             _lastHistoryData.vision = records;
+            const sig = _historySig(records);
+            if (sig === _lastRenderSig.vision) return;
+            _lastRenderSig.vision = sig;
             renderVisionHistory(sortHistoryRecords(records, historySortState.vision.field, historySortState.vision.ascending));
         }
 
@@ -2275,6 +2343,9 @@
             if (records.length > _prevHistoryCounts.embed && _prevHistoryCounts.embed >= 0) flashServiceRow('embed');
             _prevHistoryCounts.embed = records.length;
             _lastHistoryData.embed = records;
+            const sig = _historySig(records);
+            if (sig === _lastRenderSig.embed) return;
+            _lastRenderSig.embed = sig;
             renderEmbedHistory(sortHistoryRecords(records, historySortState.embed.field, historySortState.embed.ascending));
         }
 
@@ -2333,10 +2404,12 @@
         }
 
         // ========== Stats helpers ==========
-        async function updateTTSStats() {
+        async function updateTTSStats(records) {
             try {
-                const res = await fetch('/api/tts/history');
-                const records = await res.json();
+                if (!records) {
+                    const res = await fetch('/api/tts/history');
+                    records = await res.json();
+                }
                 const today = getLocalToday();
                 const todayRecords = records.filter(r => r.timestamp && r.timestamp.startsWith(today));
                 const totalDur = records.reduce((s, r) => s + (r.audio_duration_ms || 0), 0);
@@ -2348,10 +2421,12 @@
             } catch(e) {}
         }
 
-        async function updateTranslateStats() {
+        async function updateTranslateStats(records) {
             try {
-                const res = await fetch('/api/translate/history');
-                const records = await res.json();
+                if (!records) {
+                    const res = await fetch('/api/translate/history');
+                    records = await res.json();
+                }
                 const today = getLocalToday();
                 const todayRecords = records.filter(r => r.timestamp && r.timestamp.startsWith(today));
                 document.getElementById('translate-stat-total').textContent = records.length + ' items';
@@ -2359,10 +2434,12 @@
             } catch(e) {}
         }
 
-        async function updateImageStats() {
+        async function updateImageStats(records) {
             try {
-                const res = await fetch('/api/image/history');
-                const records = await res.json();
+                if (!records) {
+                    const res = await fetch('/api/image/history');
+                    records = await res.json();
+                }
                 const today = getLocalToday();
                 const todayRecords = records.filter(r => r.timestamp && r.timestamp.startsWith(today));
                 document.getElementById('image-stat-total').textContent = records.length + ' images';
@@ -2370,10 +2447,12 @@
             } catch(e) {}
         }
 
-        async function updateVisionStats() {
+        async function updateVisionStats(records) {
             try {
-                const res = await fetch('/api/vision/history');
-                const records = await res.json();
+                if (!records) {
+                    const res = await fetch('/api/vision/history');
+                    records = await res.json();
+                }
                 const today = getLocalToday();
                 const todayRecords = records.filter(r => r.timestamp && r.timestamp.startsWith(today));
                 document.getElementById('vision-stat-total').textContent = records.length + ' items';
@@ -2381,10 +2460,12 @@
             } catch(e) {}
         }
 
-        async function updateEmbedStats() {
+        async function updateEmbedStats(records) {
             try {
-                const res = await fetch('/api/embed/history');
-                const records = await res.json();
+                if (!records) {
+                    const res = await fetch('/api/embed/history');
+                    records = await res.json();
+                }
                 const today = getLocalToday();
                 const todayRecords = records.filter(r => r.timestamp && r.timestamp.startsWith(today));
                 document.getElementById('embed-stat-total').textContent = records.length + ' items';
@@ -2652,28 +2733,35 @@
         // Auto-refresh: poll statuses + active tab data every 10s
         // Skip content refresh when audio is playing to avoid destroying DOM nodes
         // referenced by timeupdate/ended closures
-        setInterval(() => {
+        setInterval(async () => {
+            if (document.visibilityState !== 'visible') return;
             // Always poll service statuses (dots) until all models are ready
             if (!_allModelsReady) refreshServiceStatuses();
             refreshGpuStats();
             refreshLogChart();
 
-            if (currentAudio && !currentAudio.paused) return;
+            if (currentAudio) return;
             // Poll all services so flash triggers even on inactive tabs
-            loadDates();
-            loadTTSHistory();
-            loadTranslateHistory();
-            loadImageHistory();
-            loadVisionHistory();
-            loadEmbedHistory();
-            // Update stats for active tab
+            await Promise.all([
+                loadDates(),
+                loadTTSHistory(),
+                loadTranslateHistory(),
+                loadImageHistory(),
+                loadVisionHistory(),
+                loadEmbedHistory(),
+            ]);
+            // Update stats for active tab, reusing the just-fetched records
             const activeTab = document.querySelector('.service-row.active')?.id?.replace('svc-row-', '');
-            if (activeTab === 'tts') updateTTSStats();
-            else if (activeTab === 'translate') updateTranslateStats();
-            else if (activeTab === 'image') updateImageStats();
-            else if (activeTab === 'vision') updateVisionStats();
-            else if (activeTab === 'embed') updateEmbedStats();
+            if (activeTab === 'tts') updateTTSStats(_lastHistoryData.tts);
+            else if (activeTab === 'translate') updateTranslateStats(_lastHistoryData.translate);
+            else if (activeTab === 'image') updateImageStats(_lastHistoryData.image);
+            else if (activeTab === 'vision') updateVisionStats(_lastHistoryData.vision);
+            else if (activeTab === 'embed') updateEmbedStats(_lastHistoryData.embed);
         }, 3000);
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') refreshServiceStatuses();
+        });
 
         // Uptime ticker (1s)
         setInterval(() => {

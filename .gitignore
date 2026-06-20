@@ -6,5 +6,13 @@ logs/
 .DS_Store
 tts_output/
 image_output/
+vision_output/
 manual.log
 manual.pid
+
+# local backups / patches
+*.bak
+*.bak.*
+*.onetouch.bak
+*.patch
+.port-backup-pre-embed/

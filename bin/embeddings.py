@@ -20,7 +20,7 @@ DEFAULT_EMBED_MODEL_ID = "jinaai/jina-embeddings-v5-omni-small-mlx"
 MATRYOSHKA_DIMS = {32, 64, 128, 256, 512, 1024}
 
 # USB model base, mirrors server.py.
-_USB_BASE = "/Volumes/One Touch/ai-models"
+_USB_BASE = "/Volumes/vault/ai-models"
 
 # input_type -> (task, task_type). task is the LoRA adapter to switch to;
 # task_type is the prefix/pooling mode passed to model.encode.
@@ -43,7 +43,7 @@ def resolve_model_dir(model_id: str = DEFAULT_EMBED_MODEL_ID) -> str:
 
     Order:
       1. env JINA_EMBED_MODEL_DIR if set and exists
-      2. USB direct: /Volumes/One Touch/ai-models/<model_id>
+      2. USB direct: /Volumes/vault/ai-models/<model_id>
       3. huggingface_hub.snapshot_download(model_id) (local cache; already cached)
     """
     env_dir = os.environ.get("JINA_EMBED_MODEL_DIR")
