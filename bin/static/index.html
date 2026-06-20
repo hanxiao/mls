@@ -167,6 +167,7 @@
         .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; flex-shrink: 0; }
         .status-dot.paused { background: #eab308; animation: none; }
         .status-dot.loading { background: #eab308; animation: pulse 0.8s infinite; }
+        .status-dot.idle { background: var(--sb-text-3); animation: none; }
         .status-dot.error { background: #ef4444; animation: none; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
@@ -335,6 +336,7 @@
                         <span class="svc-header-actions" onclick="event.stopPropagation()">
                             <button class="icon-btn" id="btn-pause" onclick="togglePause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="3" y1="2" x2="3" y2="8"/><line x1="7" y1="2" x2="7" y2="8"/></svg></button>
                             <button class="icon-btn" id="btn-restart" onclick="restartModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 5a3.5 3.5 0 1 1-3.5-3.5"/><polyline points="3.5,0 5,1.5 3.5,3"/></svg></button>
+                            <button class="icon-btn" id="btn-eject" onclick="ejectModel('asr')" title="eject (unload)"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2 8 6 2 6Z"/><line x1="2" y1="8.5" x2="8" y2="8.5"/></svg></button>
                         </span>
                     </div>
                     <div class="service-row-model" id="svc-model-short-asr">loading...</div>
@@ -356,6 +358,7 @@
                         <span class="svc-header-actions" onclick="event.stopPropagation()">
                             <button class="icon-btn" id="tts-btn-pause" onclick="toggleTTSPause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="3" y1="2" x2="3" y2="8"/><line x1="7" y1="2" x2="7" y2="8"/></svg></button>
                             <button class="icon-btn" id="tts-btn-restart" onclick="restartTTSModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 5a3.5 3.5 0 1 1-3.5-3.5"/><polyline points="3.5,0 5,1.5 3.5,3"/></svg></button>
+                            <button class="icon-btn" id="tts-btn-eject" onclick="ejectModel('tts')" title="eject (unload)"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2 8 6 2 6Z"/><line x1="2" y1="8.5" x2="8" y2="8.5"/></svg></button>
                         </span>
                     </div>
                     <div class="service-row-model" id="svc-model-short-tts">loading...</div>
@@ -377,6 +380,7 @@
                         <span class="svc-header-actions" onclick="event.stopPropagation()">
                             <button class="icon-btn" id="translate-btn-pause" onclick="toggleTranslatePause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="3" y1="2" x2="3" y2="8"/><line x1="7" y1="2" x2="7" y2="8"/></svg></button>
                             <button class="icon-btn" id="translate-btn-restart" onclick="restartTranslateModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 5a3.5 3.5 0 1 1-3.5-3.5"/><polyline points="3.5,0 5,1.5 3.5,3"/></svg></button>
+                            <button class="icon-btn" id="translate-btn-eject" onclick="ejectModel('translate')" title="eject (unload)"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2 8 6 2 6Z"/><line x1="2" y1="8.5" x2="8" y2="8.5"/></svg></button>
                         </span>
                     </div>
                     <div class="service-row-model" id="svc-model-short-translate">loading...</div>
@@ -394,6 +398,9 @@
                     <div class="service-row-header">
                         <div class="status-dot loading" id="image-status-dot"></div>
                         <span class="service-row-name">Image</span>
+                        <span class="svc-header-actions" onclick="event.stopPropagation()">
+                            <button class="icon-btn" id="image-btn-eject" onclick="ejectModel('image')" title="eject (unload)"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2 8 6 2 6Z"/><line x1="2" y1="8.5" x2="8" y2="8.5"/></svg></button>
+                        </span>
                     </div>
                     <div class="service-row-model" id="svc-model-short-image">z-image-turbo-8bit</div>
                     <div class="service-row-details" onclick="event.stopPropagation()">
@@ -412,6 +419,7 @@
                         <span class="svc-header-actions" onclick="event.stopPropagation()">
                             <button class="icon-btn" id="vision-btn-pause" onclick="toggleVisionPause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="3" y1="2" x2="3" y2="8"/><line x1="7" y1="2" x2="7" y2="8"/></svg></button>
                             <button class="icon-btn" id="vision-btn-restart" onclick="restartVisionModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 5a3.5 3.5 0 1 1-3.5-3.5"/><polyline points="3.5,0 5,1.5 3.5,3"/></svg></button>
+                            <button class="icon-btn" id="vision-btn-eject" onclick="ejectModel('vision')" title="eject (unload)"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2 8 6 2 6Z"/><line x1="2" y1="8.5" x2="8" y2="8.5"/></svg></button>
                         </span>
                     </div>
                     <div class="service-row-model" id="svc-model-short-vision">loading...</div>
@@ -431,6 +439,7 @@
                         <span class="svc-header-actions" onclick="event.stopPropagation()">
                             <button class="icon-btn" id="embed-btn-pause" onclick="toggleEmbedPause()" title="pause"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="3" y1="2" x2="3" y2="8"/><line x1="7" y1="2" x2="7" y2="8"/></svg></button>
                             <button class="icon-btn" id="embed-btn-restart" onclick="restartEmbedModel()" title="restart"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 5a3.5 3.5 0 1 1-3.5-3.5"/><polyline points="3.5,0 5,1.5 3.5,3"/></svg></button>
+                            <button class="icon-btn" id="embed-btn-eject" onclick="ejectModel('embed')" title="eject (unload)"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2 8 6 2 6Z"/><line x1="2" y1="8.5" x2="8" y2="8.5"/></svg></button>
                         </span>
                     </div>
                     <div class="service-row-model" id="svc-model-short-embed">loading...</div>
@@ -1681,6 +1690,30 @@
                 .then(data => alert('Model restarted: ' + data.model));
         }
 
+        // Eject (unload) a model to free GPU / unified memory. Lazy models
+        // (translate/image/vision) reload on next use; ASR/TTS/embed stay
+        // unloaded until restarted.
+        const _ejectEndpoints = {
+            asr: '/api/server/unload',
+            tts: '/api/tts/unload',
+            translate: '/api/translate/unload',
+            image: '/api/image/unload',
+            vision: '/api/vision/unload',
+            embed: '/api/embed/unload',
+        };
+        async function ejectModel(service) {
+            const url = _ejectEndpoints[service];
+            if (!url) return;
+            try {
+                const res = await fetch(url, {method: 'POST'});
+                if (!res.ok) throw new Error(service + ' unload ' + res.status);
+                // Reflect the freed state immediately instead of waiting for the next poll.
+                await refreshServiceStatuses();
+            } catch (e) {
+                console.warn('ejectModel(' + service + ') failed', e);
+            }
+        }
+
         async function switchModel(model) {
             const res = await fetch('/api/model/switch', {
                 method: 'POST',
@@ -1704,7 +1737,7 @@
 
                 const dot = document.getElementById('tts-status-dot');
                 dot.className = 'status-dot';
-                if (!status.loaded) dot.classList.add(status.loading ? 'loading' : 'error');
+                if (!status.loaded) dot.classList.add(status.loading ? 'loading' : 'idle');
                 else if (status.paused) dot.classList.add('paused');
 
                 // Populate models
@@ -1849,7 +1882,7 @@
 
                 const dot = document.getElementById('translate-status-dot');
                 dot.className = 'status-dot';
-                if (!status.loaded) dot.classList.add(status.loading ? 'loading' : 'error');
+                if (!status.loaded) dot.classList.add(status.loading ? 'loading' : 'idle');
                 else if (status.paused) dot.classList.add('paused');
             } catch (e) {
                 console.warn('loadTranslateStatus failed', e);
@@ -2031,7 +2064,7 @@
                 } else if (status.loading) {
                     dot.classList.add('loading');
                 } else {
-                    dot.classList.add('error');
+                    dot.classList.add('idle');
                 }
             } catch (e) {
                 console.warn('loadImageStatus failed', e);
@@ -2141,7 +2174,7 @@
             } else if (status.loading) {
                 dot.classList.add('loading');
             } else {
-                dot.classList.add('error');
+                dot.classList.add('idle');
             }
 
             document.getElementById('svc-model-short-vision').textContent =
@@ -2291,7 +2324,7 @@
             } else if (status.loading) {
                 dot.classList.add('loading');
             } else {
-                dot.classList.add('error');
+                dot.classList.add('idle');
             }
             document.getElementById('svc-model-short-embed').textContent =
                 status.loaded ? status.model_short : 'loading...';
@@ -2473,7 +2506,7 @@
             } catch(e) {}
         }
 
-        // Update a service dot: green=loaded, yellow=loading, red=not loaded
+        // Update a service dot: green=loaded, yellow pulse=loading, gray=not loaded
         function updateDot(dotId, loaded, loading) {
             const dot = document.getElementById(dotId);
             if (!dot) return;
@@ -2483,7 +2516,7 @@
             } else if (loading) {
                 dot.classList.add('loading');
             } else {
-                dot.classList.add('error');
+                dot.classList.add('idle');
             }
         }
 
@@ -2493,35 +2526,39 @@
             try {
                 const health = await fetch('/health').then(r => r.json());
 
+                // Status text for an unloaded model: "loading..." while actively
+                // loading, otherwise "not loaded" (idle / ejected).
+                const offText = (loading) => loading ? 'loading...' : 'not loaded';
+
                 // ASR
-                updateDot('status-dot', health.loaded, !health.loaded);
+                updateDot('status-dot', health.loaded, health.loading);
                 document.getElementById('svc-model-short-asr').textContent =
-                    health.loaded ? health.model.split('/').pop() : 'loading...';
+                    health.loaded ? health.model.split('/').pop() : offText(health.loading);
 
                 // TTS
-                updateDot('tts-status-dot', health.tts_loaded, !health.tts_loaded);
+                updateDot('tts-status-dot', health.tts_loaded, health.tts_loading);
                 document.getElementById('svc-model-short-tts').textContent =
-                    health.tts_loaded ? health.tts_model.split('/').pop() : 'loading...';
+                    health.tts_loaded ? health.tts_model.split('/').pop() : offText(health.tts_loading);
 
                 // Translate
-                updateDot('translate-status-dot', health.translate_loaded, !health.translate_loaded);
+                updateDot('translate-status-dot', health.translate_loaded, health.translate_loading);
                 document.getElementById('svc-model-short-translate').textContent =
-                    health.translate_loaded ? 'TranslateGemma' : 'loading...';
+                    health.translate_loaded ? 'TranslateGemma' : offText(health.translate_loading);
 
                 // Image
-                updateDot('image-status-dot', health.image_loaded, !health.image_loaded);
+                updateDot('image-status-dot', health.image_loaded, health.image_loading);
                 document.getElementById('svc-model-short-image').textContent =
-                    health.image_loaded ? health.image_model : 'loading...';
+                    health.image_loaded ? health.image_model : offText(health.image_loading);
 
                 // Vision
-                updateDot('vision-status-dot', health.vision_loaded, !health.vision_loaded);
+                updateDot('vision-status-dot', health.vision_loaded, health.vision_loading);
                 document.getElementById('svc-model-short-vision').textContent =
-                    health.vision_loaded ? health.vision_model.split('/').pop() : 'loading...';
+                    health.vision_loaded ? health.vision_model.split('/').pop() : offText(health.vision_loading);
 
                 // Embed
-                updateDot('embed-status-dot', health.embedding_loaded, !health.embedding_loaded);
+                updateDot('embed-status-dot', health.embedding_loaded, health.embedding_loading);
                 document.getElementById('svc-model-short-embed').textContent =
-                    health.embedding_loaded ? health.embedding_model.split('/').pop() : 'loading...';
+                    health.embedding_loaded ? health.embedding_model.split('/').pop() : offText(health.embedding_loading);
 
                 _allModelsReady = health.loaded && health.tts_loaded
                     && health.translate_loaded && health.image_loaded && health.vision_loaded

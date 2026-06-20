@@ -80,6 +80,7 @@ for _uv_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
 # ASR globals
 # ============================================================
 model = None
+model_loading = False
 load_fn = None
 generate_fn = None
 
@@ -727,7 +728,7 @@ class ChatCompletionRequest(BaseModel):
 
 def load_model(model_name: str = None):
     """Load ASR model."""
-    global model, load_fn, generate_fn, current_model_name
+    global model, load_fn, generate_fn, current_model_name, model_loading
 
     if model_name:
         current_model_name = model_name
@@ -735,9 +736,13 @@ def load_model(model_name: str = None):
     logger.info(f"Loading ASR model {current_model_name}...")
     start = time.time()
 
-    load_fn = stt_load_model
-    generate_fn = generate_transcription
-    model = stt_load_model(current_model_name)
+    model_loading = True
+    try:
+        load_fn = stt_load_model
+        generate_fn = generate_transcription
+        model = stt_load_model(current_model_name)
+    finally:
+        model_loading = False
 
     elapsed = time.time() - start
     logger.info(f"ASR model loaded in {elapsed:.2f}s")
@@ -1059,16 +1064,22 @@ async def health():
         "status": "ok",
         "model": current_model_name,
         "loaded": model is not None,
+        "loading": model_loading,
         "tts_model": tts_model_name,
         "tts_loaded": tts_model is not None,
+        "tts_loading": tts_model_loading,
         "translate_model": translate_model_name,
         "translate_loaded": translate_model is not None,
+        "translate_loading": translate_model_loading,
         "image_model": "z-image-turbo-8bit",
         "image_loaded": image_model is not None,
+        "image_loading": image_model_loading,
         "vision_model": vision_model_name,
         "vision_loaded": vision_model is not None,
+        "vision_loading": vision_model_loading,
         "embedding_model": embedding_model_name,
         "embedding_loaded": embedding_model is not None and embedding_model.loaded,
+        "embedding_loading": embedding_model_loading,
     }
 
 
@@ -1122,6 +1133,77 @@ def switch_model(req: SwitchModelRequest):
         model = None
         load_model(req.model)
     return {"status": "switched", "model": current_model_name}
+
+
+# ============================================================
+# Model unload (eject) endpoints - free GPU / unified memory.
+# Lazy models (translate / image / vision) reload on the next request;
+# ASR / TTS / embed stay unloaded until a manual restart. All run as plain
+# `def` so FastAPI dispatches them to the threadpool, and acquire the same
+# locks the loaders use so an eject cannot race in-flight inference on Metal.
+# ============================================================
+
+@app.post("/api/server/unload")
+def unload_model():
+    global model
+    with _gpu_lock:
+        model = None
+        gc.collect()
+        mx.clear_cache()
+    return {"status": "unloaded"}
+
+
+@app.post("/api/tts/unload")
+def unload_tts_model():
+    global tts_model
+    with _lazy_load_lock, _gpu_lock:
+        tts_model = None
+        gc.collect()
+        mx.clear_cache()
+    return {"status": "unloaded"}
+
+
+@app.post("/api/translate/unload")
+def unload_translate_model():
+    global translate_model, translate_tokenizer
+    with _lazy_load_lock, _gpu_lock:
+        translate_model = None
+        translate_tokenizer = None
+        gc.collect()
+        mx.clear_cache()
+    return {"status": "unloaded"}
+
+
+@app.post("/api/image/unload")
+def unload_image_model():
+    global image_model
+    with _lazy_load_lock, _gpu_lock:
+        image_model = None
+        gc.collect()
+        mx.clear_cache()
+    return {"status": "unloaded"}
+
+
+@app.post("/api/vision/unload")
+def unload_vision_model():
+    global vision_model, vision_processor, vision_config
+    with _lazy_load_lock, _gpu_lock:
+        vision_model = None
+        vision_processor = None
+        vision_config = None
+        gc.collect()
+        mx.clear_cache()
+    return {"status": "unloaded"}
+
+
+@app.post("/api/embed/unload")
+def unload_embed_model():
+    global embedding_model
+    with _gpu_lock:
+        embedding_model = None
+        gc.collect()
+        mx.clear_cache()
+    return {"status": "unloaded"}
 
 
 def _transcribe_audio(audio_path: str, language: str = "zh") -> TranscribeResponse:
